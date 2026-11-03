@@ -2,7 +2,9 @@
 
 [一键安装篡改猴脚本](https://raw.githubusercontent.com/opekefuya64-oss/cf-deepseek-translator/main/cf-deepseek-translator.user.js) · [下载 ZIP 安装包](https://github.com/opekefuya64-oss/cf-deepseek-translator/raw/refs/heads/main/CF-DeepSeek.zip)
 
-给 Chrome 篡改猴使用的 Codeforces 题面翻译脚本。密钥由你在首次使用时填写。脚本不依赖原版 Codeforces Better!，不加载远程脚本，也不会弹出更新提醒。
+给 Chrome 篡改猴使用的 Codeforces 题面翻译脚本。打开页面即可看到中文导航、提交按钮、样例复制按钮和输入输出标题。这些固定文字由脚本在本地替换。点击「翻译成中文」时才会使用你的 DeepSeek API 密钥翻译题面。
+
+已安装旧版的用户可以点击上方的「一键安装篡改猴脚本」，在篡改猴中确认更新，再刷新 Codeforces 页面。
 
 **安装**：在篡改猴「管理面板 → 实用工具」中找到 ZIP 导入，选择 `CF-DeepSeek.zip`，确认导入并启用脚本。也可以在文本编辑器打开 `cf-deepseek-translator.user.js`，复制全部内容，到篡改猴「添加新脚本」中替换模板并按 Ctrl+S 保存。两种方式选一种即可。
 
@@ -10,7 +12,7 @@
 
 **之后使用**：在下一道题面上点「翻译成中文」。每段译文都跟在原文下面；点「隐藏中文」可以只看原文。原题、公式、插图和样例保留，图片里的文字和 PDF 题面不会被翻译。已完成的批次缓存在篡改猴中，缓存命中时不会再次请求 API。
 
-**更换密钥或模型**：点击题面上方「API 设置」，或使用篡改猴菜单里的「CF 双语题面：API 设置」。已保存的密钥不会回显，留空会沿用原密钥。更换模型后，刷新已翻译的页面再翻译。用「清除已保存的密钥」可删除本脚本保存的凭据。
+需要**更换密钥或模型**时，点击题面上方「翻译设置」，或使用篡改猴菜单里的「CF 双语题面：翻译设置」。密钥栏留空可沿用原密钥。更换模型后，刷新已翻译的页面再翻译。用「清除已保存的密钥」可删除本脚本保存的凭据。
 
 **排查问题**
 

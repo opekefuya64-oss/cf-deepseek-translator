@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.0.0
-// @description  在 Codeforces 题面逐段显示中文，保留原文、数学公式和样例。首次打开题目时设置自己的 DeepSeek API Key。
+// @version      1.1.0
+// @description  Codeforces 常用按钮和导航直接显示中文。使用自己的 DeepSeek API 密钥逐段翻译题面，保留原文、公式和样例。
 // @license      MIT
 // @match        https://codeforces.com/*
 // @match        https://*.codeforces.com/*
@@ -40,8 +40,76 @@
   const sectionLabels = new Map(Object.entries({
     Input:'输入', Output:'输出', Note:'说明', Notes:'说明', Examples:'样例', Example:'样例',
     Interaction:'交互方式', Scoring:'评分', Hacks:'构造测试数据', Explanation:'解释',
-    'Входные данные':'输入', 'Выходные данные':'输出', 'Примечание':'说明', 'Примеры':'样例',
-  }));
+    'Входные данные':'输入', 'Выходные данные':'输出', 'Примечание':'说明', 'Примечания':'说明',
+    'Пример':'样例', 'Примеры':'样例', 'Взаимодействие':'交互方式',
+  }).map(([label, zh]) => [label.toLowerCase(), zh]));
+  const chineseHeadings = new Set(sectionLabels.values());
+  const uiLabels = new Map(sectionLabels);
+  for (const [zh, ...labels] of [
+    ['首页','Home','Главная'], ['热门','Top','Топ'], ['目录','Catalog','Каталог'],
+    ['比赛','Contests','Соревнования'], ['训练场','Gym','Тренировки'], ['题库','Problemset','Архив'],
+    ['小组','Groups','Группы'], ['选手排名','Rating','Рейтинг'], ['课程','Edu'],
+    ['开发接口','API'], ['日历','Calendar','Календарь'], ['帮助','Help','Помощь'],
+    ['登录','Enter','Login','Войти'], ['注册','Register','Зарегистрироваться'], ['退出登录','Logout','Выйти'],
+    ['主页','Main','Основные'], ['题目','Problems','Задачи'], ['提交','Submit','Отослать','Отправить'],
+    ['提交代码','Submit Code','Отослать решение'], ['我的提交','My Submissions','Мои посылки'],
+    ['提交记录','Submissions','Посылки'], ['评测状态','Status','Статус'], ['排行榜','Standings','Положение'],
+    ['好友排名','Friends Standings'], ['自定义测试','Custom test','Custom invocation','Запуск'],
+    ['挑战','Hacks','Взломы'], ['房间','Room','Комната'], ['参赛者','Participants','Участники'],
+    ['统计','Statistics','Статистика'], ['题解','Tutorial','Editorial','Разбор'],
+    ['复制','Copy','Копировать'], ['已复制','Copied','Copied!','Скопировано','Скопировано!'],
+    ['复制到剪贴板','Copy to clipboard'], ['复制输入','Copy input'], ['复制输出','Copy output'],
+    ['筛选','Filter','Apply filter','Фильтровать'], ['添加标签','Add tag','Добавить тег'],
+    ['搜索','Search','Искать'], ['重置','Reset','Сбросить'], ['运行','Run','Запустить'],
+    ['保存','Save','Сохранить'], ['取消','Cancel','Отмена'], ['关闭','Close','Закрыть'],
+    ['上一页','Previous','Prev'], ['下一页','Next'], ['报名练习','Register for practice'],
+    ['立即报名 »','Register now »','Зарегистрироваться »'],
+    ['虚拟参赛','Virtual participation','Virtual contest'], ['报名虚拟参赛','Register for virtual participation'],
+    ['时间限制','Time limit per test','Ограничение по времени на тест'],
+    ['内存限制','Memory limit per test','Ограничение по памяти на тест'], ['输入','Ввод'], ['输出','Вывод'],
+  ]) {
+    for (const label of labels) uiLabels.set(label.toLowerCase(), zh);
+  }
+
+  const statementLabels = '.problem-statement .property-title,.problem-statement .section-title,.sample-test .title,.input-output-copier';
+  const uiControls = [
+    '.menu-list a', '.second-level-menu-list a', 'nav a', '.pagination a',
+    '.lang-chooser a:not([href*="/profile/"])', '.enter-or-register-box a:not([href*="/profile/"])',
+    'a.button', 'button', '[role="button"]', '#sidebar a.addTag', '#sidebar a#addTag', 'a[href^="/contestRegistration/"]',
+    'input[type="button"]', 'input[type="reset"]', 'input[type="submit"]:not([name])', 'input[type="submit"][name=""]',
+    statementLabels,
+  ].join(',');
+  const untouchedUi = 'pre,code,textarea,svg,math,script,style,.rated-user,[contenteditable]:not([contenteditable="false"]),.ace_editor,.CodeMirror,.monaco-editor,[' + own + ']';
+  function localizeControl(control) {
+    if (control.closest(untouchedUi)) return;
+    if (control.closest('.problem-statement,.ttypography,.comment-content') && !control.matches(statementLabels)) return;
+    const isHeading = control.classList.contains('section-title');
+    function localText(value) {
+      const label = value.trim();
+      const key = label.replace(/\s+/gu, ' ').toLowerCase();
+      const zh = (isHeading && sectionLabels.get(key)) || uiLabels.get(key);
+      return zh ? value.replace(label, zh) : value;
+    }
+    for (const attribute of ['title','aria-label']) {
+      if (!control.hasAttribute(attribute)) continue;
+      const value = control.getAttribute(attribute), zh = localText(value);
+      if (zh !== value) control.setAttribute(attribute, zh);
+    }
+    if (control.localName === 'input') {
+      // Named submit values participate in the form payload.
+      if (!['button','reset','submit'].includes(control.type) || (control.type === 'submit' && control.name)) return;
+      const zh = localText(control.value);
+      if (zh !== control.value) control.value = zh;
+      return;
+    }
+    const nodes = document.createTreeWalker(control, NodeFilter.SHOW_TEXT);
+    while (nodes.nextNode()) {
+      const node = nodes.currentNode;
+      if (node.parentElement.closest(untouchedUi)) continue;
+      const zh = localText(node.data);
+      if (zh !== node.data) node.data = zh;
+    }
+  }
   const blockSelector = 'div,p,li,ul,ol,section,article,table,thead,tbody,tfoot,tr,td,th,caption,blockquote,h1,h2,h3,h4,h5,h6,dl,dt,dd,center,figure,figcaption';
   const skipSelector = '[hidden],[aria-hidden="true"],[' + own + '],button,input,textarea,select,style,noscript,pre,.sample-test,.sample-tests,.input-output-copier,.MathJax_Preview,.MJX_Assistive_MathML,.translate-problem-statement,.translate-problem-statement-panel';
   const visualMath = '.MathJax,.MathJax_Display,.MathJax_CHTML,.MathJax_SVG,mjx-container,.katex,.katex-display';
@@ -108,7 +176,7 @@
         if (!run.length) return;
         const {text, symbols} = extract(run);
         if (text && /\p{L}/u.test(text.replace(tokens,''))) {
-          rows.push({text, symbols, after: run[run.length - 1], local: el.matches('.section-title') ? sectionLabels.get(text) : null});
+          rows.push({text, symbols, after: run[run.length - 1], fixedHeading: el.matches('.section-title') && chineseHeadings.has(text)});
         }
         run = [];
       }
@@ -140,7 +208,8 @@
   function packetize(rows) {
     const groups = []; let batch = [], size = 0;
     rows.forEach((row, idx) => {
-      if (row.local) { row.parts = [row.local]; return; }
+      // Keep the original row indexes so existing cached batches still match.
+      if (row.fixedHeading) return;
       const parts = pieces(row.text);
       row.parts = Array(parts.length);
       parts.forEach((text, index) => {
@@ -178,7 +247,7 @@
         onabort:() => fail('请求已取消。'), ontimeout:() => fail('DeepSeek 响应超时，请重试。'),
         onload:r => {
           if (r.status !== 200) {
-            const msg = ({400:'请求参数无效，请核对模型设置。',401:'密钥无效，请在 API 设置中更换。',402:'DeepSeek API 余额不足。',403:'访问被拒绝，请检查 API 权限。',422:'请求参数不被模型支持。',429:'请求过于频繁，请稍后重试。',503:'DeepSeek 正忙，请稍后重试。'})[r.status];
+            const msg = ({400:'请求参数无效，请核对模型设置。',401:'密钥无效，请在翻译设置中更换。',402:'DeepSeek API 余额不足。',403:'访问被拒绝，请检查 API 权限。',422:'请求参数不被模型支持。',429:'请求过于频繁，请稍后重试。',503:'DeepSeek 正忙，请稍后重试。'})[r.status];
             return fail('DeepSeek ' + r.status + '：' + (msg || '服务未返回译文，请稍后重试。'));
           }
           try {
@@ -238,9 +307,9 @@
     const form = make('form'); const title = make('h2','连接 DeepSeek'); title.id = 'cfds-title';
     const hasKey = !!savedKey();
     const intro = make('p','点击翻译时，题面文字会发送到 DeepSeek 官方 API，并按你的账户用量计费。','muted');
-    const keyLabel = make('label','API Key'); keyLabel.htmlFor = 'cfds-key';
+    const keyLabel = make('label','接口密钥'); keyLabel.htmlFor = 'cfds-key';
     const input = make('input'); input.id = 'cfds-key'; input.type = 'password'; input.autocomplete = 'off'; input.spellcheck = false;
-    input.placeholder = hasKey ? '已保存密钥；留空可沿用' : '粘贴你的 DeepSeek API Key';
+    input.placeholder = hasKey ? '已保存密钥；留空可沿用' : '粘贴你的 DeepSeek API 密钥';
     const modelLabel = make('label','翻译模型'); modelLabel.htmlFor = 'cfds-model';
     const select = make('select'); select.id = 'cfds-model';
     for (const [value, name] of [['deepseek-flash','DeepSeek Flash'],['deepseek-v4-pro','DeepSeek V4 Pro']]) select.add(new Option(name,value));
@@ -252,7 +321,7 @@
     buttons.append(save);
     const justSave = button('仅保存'); if (onTranslate) buttons.append(justSave);
     buttons.append(later);
-    form.append(make('p','CF 双语题面 / API 设置','eyebrow'),title,intro,keyLabel,input,modelLabel,select,err,buttons);
+    form.append(make('p','CF 双语题面 / 翻译设置','eyebrow'),title,intro,keyLabel,input,modelLabel,select,err,buttons);
     if (hasKey) {
       const forget = button('清除已保存的密钥','forget');
       forget.addEventListener('click',() => { GM_deleteValue(KEY); close(); });
@@ -284,7 +353,7 @@
     const host = owned(make('div')); const root = shell(host);
     const bar = make('div',null,'toolbar'); bar.setAttribute('role','region'); bar.setAttribute('aria-label','CF 双语题面');
     const status = make('span','原文与中文逐段对照','status'); status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
-    const translate = button('翻译成中文','primary'), configure = button('API 设置'), stop = button('取消');
+    const translate = button('翻译成中文','primary'), configure = button('翻译设置'), stop = button('取消');
     stop.hidden = true;
     const actions = make('div',null,'actions'); actions.append(translate,stop,configure);
     bar.append(make('span','双语题面','brand'),status,actions); root.append(bar); statement.before(host);
@@ -305,7 +374,7 @@
       translate.disabled = true; configure.disabled = true; status.className = 'status';
       try {
         const rows = readStatement(statement);
-        if (!rows.length) throw new Error('没有找到可翻译的文字；仅支持 HTML 题面。');
+        if (!rows.some(row => !row.fixedHeading)) throw new Error('没有找到可翻译的文字；仅支持 HTML 题面。');
         const batches = packetize(rows);
         let fetched = 0;
         for (const [i,batch] of batches.entries()) {
@@ -321,7 +390,7 @@
           batch.forEach(({row,index,item}) => { row.parts[index] = data[item.id].trim(); });
         }
         if (rows.some(r => !r.after.isConnected)) throw new Error('题面刚刚重新排版，请再点一次翻译。');
-        for (const row of rows) state.lines.push(renderRow(row));
+        for (const row of rows) if (!row.fixedHeading) state.lines.push(renderRow(row));
         display(true);
         status.textContent = fetched ? selected + ' · 已翻译' : '已读取本地译文';
       } catch (e) {
@@ -336,18 +405,28 @@
     configure.addEventListener('click',() => settings(null));
     if (!firstOffered && !savedKey()) { firstOffered = true; settings(start); }
   }
-  GM_registerMenuCommand('CF 双语题面：API 设置',() => settings(null));
+  GM_registerMenuCommand('CF 双语题面：翻译设置',() => settings(null));
   const css = make('style',[
     '.problem-statement .cfds-line{display:block!important;margin:.3em 0 .55em;padding:.25em 0 .25em .8em;border-inline-start:2px solid #58a89c;font:normal 14px/1.75 system-ui,"Microsoft YaHei",sans-serif;color:inherit;text-align:start;white-space:normal;overflow-wrap:anywhere}',
     '.problem-statement .cfds-line[hidden]{display:none!important}.cfds-line code{font-size:.95em}.cfds-line math{font-size:1.05em}',
   ].join('\n'));
   document.head.append(css);
+  document.querySelectorAll(uiControls).forEach(localizeControl);
   document.querySelectorAll('.problem-statement').forEach(mount);
   new MutationObserver(records => {
-    for (const r of records) for (const n of r.addedNodes) {
-      if (n.nodeType !== 1 || n.hasAttribute(own)) continue;
-      if (n.matches('.problem-statement')) mount(n);
-      else n.querySelectorAll('.problem-statement').forEach(mount);
+    const controls = new Set();
+    for (const record of records) {
+      const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+      const enclosing = target?.closest(uiControls);
+      if (enclosing) controls.add(enclosing);
+      for (const node of record.addedNodes) {
+        if (node.nodeType !== 1 || node.closest(untouchedUi)) continue;
+        if (node.matches(uiControls)) controls.add(node);
+        node.querySelectorAll(uiControls).forEach(control => controls.add(control));
+        if (node.matches('.problem-statement')) mount(node);
+        else node.querySelectorAll('.problem-statement').forEach(mount);
+      }
     }
-  }).observe(document.body,{childList:true,subtree:true});
+    controls.forEach(localizeControl);
+  }).observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['value','title','aria-label']});
 })();
