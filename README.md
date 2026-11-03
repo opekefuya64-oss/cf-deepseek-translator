@@ -2,7 +2,7 @@
 
 [一键安装篡改猴脚本](https://raw.githubusercontent.com/opekefuya64-oss/cf-deepseek-translator/main/cf-deepseek-translator.user.js) · [下载 ZIP 安装包](https://github.com/opekefuya64-oss/cf-deepseek-translator/raw/refs/heads/main/CF-DeepSeek.zip)
 
-给 Chrome 篡改猴使用的 Codeforces 题面翻译脚本。打开页面即可看到中文导航、提交按钮、样例复制按钮和输入输出标题。这些固定文字由脚本在本地替换。点击「翻译成中文」时才会使用你的 DeepSeek API 密钥翻译题面。
+在 Chrome 的篡改猴中双语阅读 Codeforces 题面、首页博文和博客评论。导航、「全文和评论」「回复」等固定文字直接显示为中文；只有主动点击翻译，脚本才会使用你的 DeepSeek API 密钥。
 
 已安装旧版的用户可以点击上方的「一键安装篡改猴脚本」，在篡改猴中确认更新，再刷新 Codeforces 页面。
 
@@ -10,19 +10,23 @@
 
 **第一次翻译**：打开或刷新一道 HTML 题目，例如 [4A · Watermelon](https://codeforces.com/problemset/problem/4/A)。在「连接 DeepSeek」窗口粘贴你自己的 DeepSeek API Key，保留默认 Flash 模型，点「保存并翻译」。如篡改猴询问是否允许访问翻译服务，目标应为 `api.deepseek.com`。
 
-**之后使用**：在下一道题面上点「翻译成中文」。每段译文都跟在原文下面；点「隐藏中文」可以只看原文。原题、公式、插图和样例保留，图片里的文字和 PDF 题面不会被翻译。已完成的批次缓存在篡改猴中，缓存命中时不会再次请求 API。
+**首页和博客**：在 Codeforces [首页](https://codeforces.com/)或个人博客列表，点某篇上方的「翻译博文」，就能对照阅读标题和当前页面上的正文。如果首页只显示摘要，点「全文和评论」进入详情页，再点「翻译博文」即可阅读全文。在讨论区，点「翻译这条评论」只翻译选中的一条。第一次也可以直接从博文或评论按钮进入密钥设置。
 
-需要**更换密钥或模型**时，点击题面上方「翻译设置」，或使用篡改猴菜单里的「CF 双语题面：翻译设置」。密钥栏留空可沿用原密钥。更换模型后，刷新已翻译的页面再翻译。用「清除已保存的密钥」可删除本脚本保存的凭据。
+**题面**：在题目上点「翻译成中文」。原题、公式、插图和样例保留，图片里的文字和 PDF 题面不会被翻译。
+
+**对照阅读**：每段译文跟在原文下面，可用「隐藏中文」和「显示中文」切换。脚本会在篡改猴中缓存已完成的翻译；相同内容命中缓存时不会重复请求。
+
+需要**更换密钥或模型**时，点击博文或题面上方的「翻译设置」，或使用篡改猴菜单里的「CF 双语题面：翻译设置」。密钥栏留空可沿用原密钥。更换模型后，刷新已翻译的页面再翻译。用「清除已保存的密钥」可删除本脚本保存的凭据。
 
 **排查问题**
 
 - 旧脚本还在提示更新：在篡改猴面板中单独停用原版 Codeforces Better!，保留「CF 双语题面 · DeepSeek」，再刷新题目页。
-- 看不到「双语题面」：确认当前是题面页，脚本已启用。新版 Chrome 还可在篡改猴的扩展详情页检查「允许用户脚本」。见[篡改猴官方说明](https://www.tampermonkey.net/faq.php?locale=zh&q=Q209)。
+- 看不到翻译按钮：确认脚本已更新至 1.2.0 或以上并启用，刷新之前打开的页面。博文和题面的按钮位于标题上方，评论按钮位于每条评论开头。新版 Chrome 可在篡改猴的扩展详情页检查「允许用户脚本」。见[篡改猴官方说明](https://www.tampermonkey.net/faq.php?locale=zh&q=Q209)。
 - 401 表示密钥被拒绝，402 表示 API 余额不足，429 表示请求太频繁。连接失败时先检查网络和篡改猴对 DeepSeek 域名的访问权限。
 - 提示漏译段落或公式：点「重试翻译」。脚本不会显示未通过完整性检查的批次。
 
-**数据去向**：密钥保存于本脚本的篡改猴存储。翻译时通过 HTTPS 直接调用 [DeepSeek 官方接口](https://api-docs.deepseek.com/zh-cn/)。请求含待翻译段落和相关公式，不包含 Codeforces 登录 Cookie、提交代码或样例输入输出。本脚本没有中转服务器。
+**数据去向**：密钥保存在本脚本的篡改猴存储中。翻译时通过 HTTPS 直接调用 [DeepSeek 官方接口](https://api-docs.deepseek.com/zh-cn/)，发送所选题面、博文或评论的文字，以及段内的公式和行内代码。博文作者栏、其他评论、代码块、编辑框和题目样例不会随所选正文发送。请求不附带 Codeforces 登录 Cookie。本脚本没有中转服务器。
 
-本脚本独立编写，参考了北极小狐 [OJBetter / Codeforces Better!](https://github.com/beijixiaohu/OJBetter) 的题面翻译交互和公式保护思路，专注于题面翻译。
+本脚本独立编写，题面翻译交互和公式保护参考了北极小狐的 [OJBetter / Codeforces Better!](https://github.com/beijixiaohu/OJBetter)。
 
 本仓库使用 [MIT 许可证](LICENSE)。
