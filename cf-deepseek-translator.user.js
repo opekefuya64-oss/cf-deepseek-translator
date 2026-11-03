@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.2.0
+// @version      1.3.0
 // @description  Codeforces 中文导航。用自己的 DeepSeek 密钥逐段翻译题面、首页博文、个人博客和评论。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -26,8 +26,15 @@
   'use strict';
   const ENDPOINT = 'https://api.deepseek.com/chat/completions';
   const KEY = 'cfds.key', MODEL = 'cfds.model', CACHE = 'cfds.cache.v1';
+  const STYLE_KEY = 'cfds.translationStyle';
   const model = () => GM_getValue(MODEL, 'deepseek-flash');
   const savedKey = () => GM_getValue(KEY, '');
+  function savedStyle() {
+    return GM_getValue(STYLE_KEY, 'original') === 'emphasized' ? 'emphasized' : 'original';
+  }
+  function applySavedStyle() {
+    document.documentElement.dataset.cfdsStyle = savedStyle();
+  }
   const own = 'data-cfds-v1';
   const owned = (el) => { el.setAttribute(own, ''); return el; };
   const make = (tag, text, cls) => {
@@ -313,8 +320,14 @@
       GM_setValue(CACHE,list);
     } catch { /* Optional cache: storage exhaustion must not prevent translation. */ }
   }
+  function translationLine() {
+    const line = owned(make('span', null, 'cfds-line'));
+    line.lang = 'zh-CN';
+    line.append(make('span', '译文', 'cfds-badge'));
+    return line;
+  }
   function renderRow(row) {
-    const line = owned(make('span')); line.className = 'cfds-line'; line.lang = 'zh-CN';
+    const line = translationLine();
     const text = row.parts.join(' '); let offset = 0;
     for (const m of text.matchAll(tokens)) {
       line.append(text.slice(offset,m.index)); line.append(row.symbols[Number(m[1])-1]?.build() || m[0]); offset = m.index + m[0].length;
@@ -322,6 +335,27 @@
     line.append(text.slice(offset)); row.after.after(line); return line;
   }
 
+  const translationCss = `
+    .cfds-line[data-cfds-v1] {
+      display:block!important; margin:.3em 0 .55em; padding:.25em 0 .25em .8em;
+      border-inline-start:2px solid #58a89c; font:normal 14px/1.75 system-ui,"Microsoft YaHei",sans-serif;
+      color:inherit; text-align:start; white-space:normal; overflow-wrap:anywhere;
+    }
+    .cfds-line[data-cfds-v1][hidden] { display:none!important }
+    .cfds-line code { font-size:.95em }
+    .cfds-line math { font-size:1.05em }
+    .cfds-line[data-cfds-v1] > .cfds-badge { display:none }
+    [data-cfds-style="emphasized"] .cfds-line[data-cfds-v1] {
+      box-sizing:border-box; margin:.45em 0 .75em; padding:.5em .75em;
+      border:1px solid #54877f; border-inline-start:4px solid #28786d; border-radius:6px;
+      background-color:rgba(63,151,133,.11); font-weight:600;
+    }
+    [data-cfds-style="emphasized"] .cfds-line[data-cfds-v1] > .cfds-badge {
+      display:inline-block; margin-inline-end:.6em; padding:0 .45em; vertical-align:.06em;
+      border:1px solid #24675e; border-radius:4px; background:#24675e; color:#fff;
+      font:bold 12px/1.5 system-ui,"Microsoft YaHei",sans-serif; white-space:nowrap; user-select:none;
+    }
+  `;
   const skin = [
     ':host{all:initial;display:block;font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif;color:#1e293b;--accent:#134c52}',
     '*,*::before,*::after{box-sizing:border-box}button,select,input{font:inherit}button{border:1px solid #bbc9ca;border-radius:6px;padding:5px 12px;background:white;color:#20434a;cursor:pointer;font-weight:550}',
@@ -331,6 +365,7 @@
     'dialog{margin:auto;max-width:min(430px,92vw);width:430px;max-height:90vh;padding:24px;border:1px solid #adcbc8;border-radius:12px;color:#20353a;background:white;box-shadow:0 16px 60px #10262240}',
     'dialog::backdrop{background:#10272c70}.eyebrow{margin:0 0 5px;letter-spacing:.08em;font-size:11px;font-weight:700;color:#327267}h2{font-size:21px;margin:0 0 8px}p{margin:0 0 12px}.muted{font-size:13px;color:#496061}',
     'label{display:block;font-weight:600;margin:14px 0 4px}input,select{width:100%;padding:8px 10px;background:white;color:#20353a;border:1px solid #a7bbbb;border-radius:6px}.buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}.err{font-size:13px;margin-top:8px}.forget{border:none;padding-left:0;font-size:12px;color:#91534c}',
+    '.style-preview{margin-top:10px}.preview-title{display:block;color:#496061;font-size:12px;margin-bottom:3px}',
     '@media(max-width:510px){.status{flex-basis:calc(100% - 110px)}.toolbar{padding:8px}.buttons button{padding:6px 9px}}',
     '@media print{.toolbar,dialog{display:none}}',
   ].join('\n');
@@ -344,8 +379,8 @@
     if (closeSettings) closeSettings();
     const host = owned(make('div')), root = shell(host);
     const dlg = make('dialog'); dlg.setAttribute('aria-labelledby','cfds-title');
-    const form = make('form'); const title = make('h2','连接 DeepSeek'); title.id = 'cfds-title';
     const hasKey = !!savedKey();
+    const form = make('form'); const title = make('h2',hasKey ? '翻译设置' : '连接 DeepSeek'); title.id = 'cfds-title';
     const intro = make('p','点击翻译时，所选题面、博文或评论的文字会发送到 DeepSeek 官方 API，按你的账户用量计费。','muted');
     const keyLabel = make('label','接口密钥'); keyLabel.htmlFor = 'cfds-key';
     const input = make('input'); input.id = 'cfds-key'; input.type = 'password'; input.autocomplete = 'off'; input.spellcheck = false;
@@ -354,6 +389,21 @@
     const select = make('select'); select.id = 'cfds-model';
     for (const [value, name] of [['deepseek-flash','DeepSeek Flash'],['deepseek-v4-pro','DeepSeek V4 Pro']]) select.add(new Option(name,value));
     select.value = model(); if (select.selectedIndex < 0) select.selectedIndex = 0;
+    const styleLabel = make('label', '译文样式');
+    const styleSelect = make('select');
+    styleLabel.htmlFor = styleSelect.id = 'cfds-translation-style';
+    styleSelect.add(new Option('原版', 'original'));
+    styleSelect.add(new Option('加重提示版', 'emphasized'));
+    styleSelect.value = savedStyle();
+    const preview = make('div', null, 'style-preview');
+    const source = make('span', 'Print the minimum number of moves.');
+    source.lang = 'en';
+    const sample = translationLine();
+    sample.append('输出最少操作次数。');
+    preview.append(make('span', '样式预览', 'preview-title'), source, sample);
+    preview.dataset.cfdsStyle = styleSelect.value;
+    styleSelect.addEventListener('change', () => { preview.dataset.cfdsStyle = styleSelect.value; });
+    root.append(make('style', translationCss));
     const err = make('div','','err'); err.setAttribute('role','alert');
     const buttons = make('div',null,'buttons');
     const save = button(onTranslate ? '保存并翻译' : '保存','primary'); save.type = 'submit';
@@ -361,7 +411,7 @@
     buttons.append(save);
     const justSave = button('仅保存'); if (onTranslate) buttons.append(justSave);
     buttons.append(later);
-    form.append(make('p','CF 双语题面 / 翻译设置','eyebrow'),title,intro,keyLabel,input,modelLabel,select,err,buttons);
+    form.append(make('p','CF 双语题面 · DeepSeek','eyebrow'),title,intro,keyLabel,input,modelLabel,select,styleLabel,styleSelect,preview,err,buttons);
     if (hasKey) {
       const forget = button('清除已保存的密钥','forget');
       forget.addEventListener('click',() => { GM_deleteValue(KEY); close(); });
@@ -370,19 +420,25 @@
     root.append(dlg); dlg.append(form); document.body.append(host);
     function close() { input.value = ''; if (dlg.open) dlg.close(); host.remove(); closeSettings = null; }
     function storeThen(translate) {
-      const value = input.value.trim() || savedKey();
-      if (!value || /\s/.test(value) || !value.startsWith('sk-') || value.length < 8) {
+      const enteredKey = input.value.trim();
+      const value = enteredKey || savedKey();
+      if ((translate || enteredKey) && !/^sk-\S{5,}$/.test(value)) {
         err.textContent = '请填写以 sk- 开头的完整 DeepSeek API Key。'; input.focus(); return;
       }
-      try { GM_setValue(KEY,value); GM_setValue(MODEL,select.value); }
-      catch { err.textContent = '保存失败，请检查篡改猴的脚本存储。'; return; }
+      try {
+        if (enteredKey) GM_setValue(KEY, enteredKey);
+        GM_setValue(MODEL, select.value);
+        GM_setValue(STYLE_KEY, styleSelect.value);
+      } catch { err.textContent = '保存失败，请检查篡改猴的脚本存储。'; return; }
+      applySavedStyle();
       close(); if (translate) onTranslate?.();
     }
     form.addEventListener('submit', e => { e.preventDefault(); storeThen(!!onTranslate); });
     justSave.addEventListener('click',() => storeThen(false));
     later.addEventListener('click',close);
     dlg.addEventListener('cancel',e => { e.preventDefault(); close(); });
-    closeSettings = close; dlg.showModal(); input.focus();
+    closeSettings = close; dlg.showModal();
+    (hasKey ? styleSelect : input).focus();
   }
 
   const installed = new WeakSet();
@@ -477,12 +533,12 @@
     return start;
   }
   GM_registerMenuCommand('CF 双语题面：翻译设置',() => settings(null));
-  const css = make('style',[
-    '.cfds-line[data-cfds-v1]{display:block!important;margin:.3em 0 .55em;padding:.25em 0 .25em .8em;border-inline-start:2px solid #58a89c;font:normal 14px/1.75 system-ui,"Microsoft YaHei",sans-serif;color:inherit;text-align:start;white-space:normal;overflow-wrap:anywhere}',
-    '.cfds-line[data-cfds-v1][hidden]{display:none!important}.cfds-line code{font-size:.95em}.cfds-line math{font-size:1.05em}',
-    '.cfds-comment-launch{background:transparent;color:inherit;border:1px solid #83aaa5;border-radius:4px;cursor:pointer;font:12px/1.5 system-ui,sans-serif;padding:1px 7px;margin:0 0 4px}',
-  ].join('\n'));
-  document.head.append(css);
+  applySavedStyle();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) applySavedStyle();
+  });
+  document.head.append(make('style', translationCss +
+    '.cfds-comment-launch{background:transparent;color:inherit;border:1px solid #83aaa5;border-radius:4px;cursor:pointer;font:12px/1.5 system-ui,sans-serif;padding:1px 7px;margin:0 0 4px}'));
   document.querySelectorAll(uiControls).forEach(localizeControl);
   document.querySelectorAll(readingTargets).forEach(mount);
   new MutationObserver(records => {
