@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.3.1
+// @version      1.4.0
 // @description  Codeforces 中文导航。用自己的 DeepSeek 密钥逐段翻译题面、首页博文、个人博客和评论。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -30,10 +30,17 @@
   const model = () => GM_getValue(MODEL, 'deepseek-flash');
   const savedKey = () => GM_getValue(KEY, '');
   function savedStyle() {
-    return GM_getValue(STYLE_KEY, 'original') === 'emphasized' ? 'emphasized' : 'original';
+    const value = GM_getValue(STYLE_KEY, null);
+    // In 1.3.x the emphasized preset enabled both options.
+    if (value === 'emphasized') return {bold:true, framed:true};
+    return {bold:value?.bold === true, framed:value?.framed === true};
+  }
+  function applyStyle(container, style) {
+    container.toggleAttribute('data-cfds-bold', style.bold);
+    container.toggleAttribute('data-cfds-framed', style.framed);
   }
   function applySavedStyle() {
-    document.documentElement.dataset.cfdsStyle = savedStyle();
+    applyStyle(document.documentElement, savedStyle());
   }
   const own = 'data-cfds-v1';
   const owned = (el) => { el.setAttribute(own, ''); return el; };
@@ -376,10 +383,11 @@
     .cfds-line[data-cfds-v1][hidden] { display:none!important }
     .cfds-line code { font-size:.95em }
     .cfds-line math { font-size:1.05em }
-    [data-cfds-style="emphasized"] .cfds-line[data-cfds-v1] {
+    [data-cfds-bold] .cfds-line[data-cfds-v1] { font-weight:550 }
+    [data-cfds-framed] .cfds-line[data-cfds-v1] {
       box-sizing:border-box; margin:.4em 0 .85em; padding:.5em .95em;
       border:1px solid rgba(55,123,113,.24); border-inline-start:3px solid #388477;
-      border-radius:7px; background-color:rgba(61,148,126,.075); font-weight:550; line-height:1.8;
+      border-radius:7px; background-color:rgba(61,148,126,.075); line-height:1.8;
     }
   `;
   const skin = [
@@ -390,7 +398,10 @@
     '.brand{font-weight:700;color:#224c4c}.status{flex:1 1 140px;color:#41595b;font-size:12px}.status.error,.err{color:#a23226}.actions{display:flex;gap:6px;flex-wrap:wrap}',
     'dialog{margin:auto;max-width:min(430px,92vw);width:430px;max-height:90vh;padding:24px;border:1px solid #adcbc8;border-radius:12px;color:#20353a;background:white;box-shadow:0 16px 60px #10262240}',
     'dialog::backdrop{background:#10272c70}.eyebrow{margin:0 0 5px;letter-spacing:.08em;font-size:11px;font-weight:700;color:#327267}h2{font-size:21px;margin:0 0 8px}p{margin:0 0 12px}.muted{font-size:13px;color:#496061}',
-    'label{display:block;font-weight:600;margin:14px 0 4px}input,select{width:100%;padding:8px 10px;background:white;color:#20353a;border:1px solid #a7bbbb;border-radius:6px}.buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}.err{font-size:13px;margin-top:8px}.forget{border:none;padding-left:0;font-size:12px;color:#91534c}',
+    'label{display:block;font-weight:600;margin:14px 0 4px}input[type=password],select{width:100%;padding:8px 10px;background:white;color:#20353a;border:1px solid #a7bbbb;border-radius:6px}.buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}.err{font-size:13px;margin-top:8px}.forget{border:none;padding-left:0;font-size:12px;color:#91534c}',
+    '.style-options{margin:14px 0 0;padding:0;border:0;min-inline-size:0}.style-options legend{padding:0;margin-bottom:5px;font-weight:600}',
+    '.style-options label{display:inline-flex;align-items:center;gap:7px;margin:0 8px 4px 0;padding:6px 10px;border:1px solid #b3c4c2;border-radius:6px;font-weight:500;cursor:pointer}',
+    '.style-options input{margin:0;width:16px;height:16px;accent-color:var(--accent)}.style-options label:has(:checked){border-color:#679b92;background:#eef7f5}',
     '.style-preview{margin-top:10px}.preview-title{display:block;color:#496061;font-size:12px;margin-bottom:3px}',
     '@media(max-width:510px){.status{flex-basis:calc(100% - 110px)}.toolbar{padding:8px}.buttons button{padding:6px 9px}}',
     '@media print{.toolbar,dialog{display:none}}',
@@ -415,20 +426,30 @@
     const select = make('select'); select.id = 'cfds-model';
     for (const [value, name] of [['deepseek-flash','DeepSeek Flash'],['deepseek-v4-pro','DeepSeek V4 Pro']]) select.add(new Option(name,value));
     select.value = model(); if (select.selectedIndex < 0) select.selectedIndex = 0;
-    const styleLabel = make('label', '译文样式');
-    const styleSelect = make('select');
-    styleLabel.htmlFor = styleSelect.id = 'cfds-translation-style';
-    styleSelect.add(new Option('原版', 'original'));
-    styleSelect.add(new Option('加重提示版', 'emphasized'));
-    styleSelect.value = savedStyle();
+    const styleOptions = make('fieldset', null, 'style-options');
+    styleOptions.append(make('legend', '译文样式'));
+    const currentStyle = savedStyle();
+    function addStyleOption(name, caption) {
+      const checkbox = make('input');
+      checkbox.type = 'checkbox';
+      checkbox.name = name;
+      checkbox.checked = currentStyle[name];
+      const label = make('label');
+      label.append(checkbox, caption);
+      styleOptions.append(label);
+      return checkbox;
+    }
+    const bold = addStyleOption('bold', '文字加粗');
+    const framed = addStyleOption('framed', '显示边框');
+    const selectedStyle = () => ({bold:bold.checked, framed:framed.checked});
     const preview = make('div', null, 'style-preview');
     const source = make('span', 'Print the minimum number of moves.');
     source.lang = 'en';
     const sample = translationLine();
     sample.append('输出最少操作次数。');
     preview.append(make('span', '样式预览', 'preview-title'), source, sample);
-    preview.dataset.cfdsStyle = styleSelect.value;
-    styleSelect.addEventListener('change', () => { preview.dataset.cfdsStyle = styleSelect.value; });
+    applyStyle(preview, currentStyle);
+    styleOptions.addEventListener('change', () => applyStyle(preview, selectedStyle()));
     root.append(make('style', translationCss));
     const err = make('div','','err'); err.setAttribute('role','alert');
     const buttons = make('div',null,'buttons');
@@ -437,7 +458,7 @@
     buttons.append(save);
     const justSave = button('仅保存'); if (onTranslate) buttons.append(justSave);
     buttons.append(later);
-    form.append(make('p','CF 双语题面 · DeepSeek','eyebrow'),title,intro,keyLabel,input,modelLabel,select,styleLabel,styleSelect,preview,err,buttons);
+    form.append(make('p','CF 双语题面 · DeepSeek','eyebrow'),title,intro,keyLabel,input,modelLabel,select,styleOptions,preview,err,buttons);
     if (hasKey) {
       const forget = button('清除已保存的密钥','forget');
       forget.addEventListener('click',() => { GM_deleteValue(KEY); close(); });
@@ -454,7 +475,7 @@
       try {
         if (enteredKey) GM_setValue(KEY, enteredKey);
         GM_setValue(MODEL, select.value);
-        GM_setValue(STYLE_KEY, styleSelect.value);
+        GM_setValue(STYLE_KEY, selectedStyle());
       } catch { err.textContent = '保存失败，请检查篡改猴的脚本存储。'; return; }
       applySavedStyle();
       close(); if (translate) onTranslate?.();
@@ -464,7 +485,7 @@
     later.addEventListener('click',close);
     dlg.addEventListener('cancel',e => { e.preventDefault(); close(); });
     closeSettings = close; dlg.showModal();
-    (hasKey ? styleSelect : input).focus();
+    (hasKey ? bold : input).focus();
   }
 
   const installed = new WeakSet();
