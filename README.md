@@ -1,6 +1,6 @@
 # CF 双语题面 · DeepSeek
 
-[一键安装篡改猴脚本](https://raw.githubusercontent.com/opekefuya64-oss/cf-deepseek-translator/main/cf-deepseek-translator.user.js) · [下载 ZIP 安装包](https://github.com/opekefuya64-oss/cf-deepseek-translator/raw/refs/heads/main/CF-DeepSeek.zip)
+[一键安装篡改猴脚本](https://raw.githubusercontent.com/opekefuya64-oss/cf-deepseek-translator/main/cf-deepseek-translator.user.js) · [下载 ZIP 安装包](https://raw.githubusercontent.com/opekefuya64-oss/cf-deepseek-translator/main/CF-DeepSeek.zip)
 
 在 Chrome 的篡改猴中双语阅读 Codeforces 题面、首页博文和博客评论。导航和常用按钮直接显示中文。比赛入口显示「报名」，创建账号的入口显示「注册」。点击翻译时，脚本会使用你的 DeepSeek API 密钥。
 
