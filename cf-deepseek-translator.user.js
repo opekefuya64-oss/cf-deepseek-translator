@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.4.0
+// @version      1.5.0
 // @description  Codeforces 中文导航。用自己的 DeepSeek 密钥逐段翻译题面、首页博文、个人博客和评论。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -15,6 +15,7 @@
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
+// @grant        GM.setClipboard
 // @grant        GM_xmlhttpRequest
 // @connect      api.deepseek.com
 // @updateURL    none
@@ -178,7 +179,15 @@
   }
   const blockSelector = 'div,p,li,ul,ol,section,article,table,thead,tbody,tfoot,tr,td,th,caption,blockquote,h1,h2,h3,h4,h5,h6,dl,dt,dd,center,figure,figcaption';
   const skipSelector = '[hidden],[aria-hidden="true"],[' + own + '],button,input,textarea,select,form,[contenteditable]:not([contenteditable="false"]),iframe,template,style,noscript,pre,.prettyprint,.source-copier,.ace_editor,.CodeMirror,.monaco-editor,.collapsible-topic-options,.sample-test,.sample-tests,.input-output-copier,.MathJax_Preview,.MJX_Assistive_MathML,.translate-problem-statement,.translate-problem-statement-panel';
-  const visualMath = '.MathJax,.MathJax_Display,.MathJax_CHTML,.MathJax_SVG,mjx-container,.katex,.katex-display';
+  const visualMath = '.MathJax,.MathJax_Display,.MathJax_CHTML,.MathJax_SVG,.MathJax_SVG_Display,mjx-container,.katex,.katex-display,math';
+  const mathScript = 'script[type^="math/tex"]';
+  function mathSource(node) {
+    const next = node.nextElementSibling;
+    return (next?.matches(mathScript) && next.textContent)
+      || node.querySelector('annotation[encoding="application/x-tex"]')?.textContent
+      || node.getAttribute('alttext') || node.querySelector('math[alttext]')?.getAttribute('alttext')
+      || node.getAttribute('aria-label');
+  }
   const tex = /\$\$\$[\s\S]*?\$\$\$|\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/g;
   const tokens = /⟦(\d+)⟧/g;
   // Only recreate known, passive presentation elements. Model output is always a text node.
@@ -209,14 +218,17 @@
       // Codeforces MathJax v2 emits preview + visible frame + math/tex script.
       // Treat the three as one symbol. The assistive MathML keeps fractions and indices.
       if (n.matches(visualMath)) {
-        const next = n.nextElementSibling;
-        const math = n.querySelector('math');
-        const source = (next?.matches('script[type^="math/tex"]') ? next.textContent : '')
-          || n.querySelector('annotation[encoding="application/x-tex"]')?.textContent
-          || n.getAttribute('aria-label') || math?.textContent || n.textContent || '公式';
-        return keep(source, () => math ? copySymbol(math) : make('code', source));
+        const math = n.localName === 'math' ? n : n.querySelector('math');
+        const original = mathSource(n);
+        const source = original || math?.textContent || n.textContent || '公式';
+        return keep(source, () => {
+          if (!math) return make('code', source);
+          const copy = copySymbol(math);
+          if (original) copy.setAttribute('alttext', original);
+          return copy;
+        });
       }
-      if (n.matches('script[type^="math/tex"]')) {
+      if (n.matches(mathScript)) {
         if (n.previousElementSibling?.matches(visualMath)) return '';
         return keep(n.textContent, () => make('code', n.textContent));
       }
@@ -225,7 +237,7 @@
         const handle = n.textContent;
         return keep('保留原用户名', () => make('span', handle));
       }
-      if (n.matches('math,.tex-span,code,tt,.tt,var,sub,sup')) return keep(n.textContent, () => copySymbol(n));
+      if (n.matches('.tex-span,code,tt,.tt,var,sub,sup')) return keep(n.textContent, () => copySymbol(n));
       if (n.matches('img,svg')) {
         const label = n.getAttribute('alt') || n.querySelector('title')?.textContent || '图见原文';
         return keep(label, () => make('span', '〔' + label + '〕'));
@@ -374,6 +386,118 @@
     line.append(text.slice(offset)); row.after.after(line); return line;
   }
 
+  function problemText(target) {
+    const lines = [];
+    let inline = '';
+    function flush() {
+      const line = inline.replace(/\s+/gu, ' ').trim();
+      if (line) lines.push(line);
+      inline = '';
+    }
+    function visit(node) {
+      if (node.nodeType === Node.TEXT_NODE) { inline += node.data; return; }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.matches(mathScript)) {
+        if (!node.previousElementSibling?.matches(visualMath)) inline += node.textContent;
+        return;
+      }
+      if (node.matches('[hidden],script,style,noscript,template,iframe,button,[role="button"],form,input,select,textarea,.input-output-copier,.source-copier,.MathJax_Preview,.MJX_Assistive_MathML,.translate-problem-statement,.translate-problem-statement-panel')) return;
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return;
+      if (node.matches(visualMath)) {
+        const math = node.localName === 'math' ? node : node.querySelector('math');
+        inline += mathSource(node) || (math ? copySymbol(math).outerHTML : node.textContent);
+        return;
+      }
+      if (node.matches('[aria-hidden="true"]') || (node.hasAttribute(own) && !node.matches('.cfds-line'))) return;
+      switch (node.localName) {
+        case 'br': flush(); return;
+        case 'pre': {
+          flush();
+          // Modern samples wrap each input line in a div. Older ones use newlines or <br>.
+          if (node.childElementCount && [...node.children].every(row => row.matches('.test-example-line'))) {
+            const sample = [];
+            for (const child of node.childNodes) {
+              if (child.nodeType === Node.ELEMENT_NODE) sample.push(child.innerText);
+              else if (child.nodeType === Node.TEXT_NODE && child.data.trim()) sample.push(child.data.replace(/\n$/, ''));
+            }
+            lines.push(sample.join('\n'));
+          } else {
+            lines.push(node.innerText);
+          }
+          return;
+        }
+        case 'img': {
+          const src = node.currentSrc || node.src;
+          inline += '〔' + (node.alt || '插图') + (/^https?:\/\//i.test(src) ? ' ' + src : '') + '〕';
+          return;
+        }
+        case 'sub':
+        case 'sup':
+          inline += node.localName === 'sub' ? '_{' : '^{';
+          node.childNodes.forEach(visit);
+          inline += '}';
+          return;
+        case 'tr':
+          flush();
+          lines.push(Array.from(node.cells, problemText).join('\t'));
+          return;
+        case 'ol':
+        case 'ul': {
+          flush();
+          const first = node.reversed ? node.querySelectorAll(':scope > li').length : 1;
+          let ordinal = node.hasAttribute('start') ? node.start : first;
+          for (const item of node.childNodes) {
+            if (item.localName !== 'li') { visit(item); continue; }
+            flush();
+            if (item.hasAttribute('value')) ordinal = item.value;
+            const content = problemText(item);
+            if (content) lines.push((node.localName === 'ol' ? ordinal + '. ' : '• ') + content);
+            ordinal += node.reversed ? -1 : 1;
+          }
+          flush();
+          return;
+        }
+      }
+      const property = node.matches('.property-title');
+      const block = !property && node.matches(blockSelector + ',.cfds-line');
+      if (block) flush();
+      node.childNodes.forEach(visit);
+      if (property) inline += ' ';
+      if (block) flush();
+    }
+    visit(target);
+    flush();
+    return lines.join('\n');
+  }
+
+  function problemCopyButton(target) {
+    const copy = button('复制题目');
+    copy.title = '复制完整题面，含样例和当前显示的中文';
+    copy.setAttribute('aria-live', 'polite');
+    let reset;
+    copy.addEventListener('click', async () => {
+      clearTimeout(reset);
+      copy.disabled = true;
+      try {
+        const text = problemText(target);
+        if (text.trim()) {
+          if (typeof GM !== 'undefined' && typeof GM.setClipboard === 'function') await GM.setClipboard(text, 'text');
+          else await navigator.clipboard.writeText(text);
+          copy.textContent = '已复制';
+        } else {
+          copy.textContent = '没有可复制的题面';
+        }
+      } catch {
+        copy.textContent = '复制失败，请重试';
+      } finally {
+        copy.disabled = false;
+        reset = setTimeout(() => { copy.textContent = '复制题目'; }, 2200);
+      }
+    });
+    return copy;
+  }
+
   const translationCss = `
     .cfds-line[data-cfds-v1] {
       display:block!important; margin:.3em 0 .55em; padding:.25em 0 .25em .8em;
@@ -520,7 +644,9 @@
     const action = kind === 'problem' ? '翻译成中文' : '翻译' + name;
     const translate = button(action,'primary'), configure = button('翻译设置'), stop = button('取消');
     stop.hidden = true;
-    const actions = make('div',null,'actions'); actions.append(translate,stop,configure);
+    const actions = make('div',null,'actions'); actions.append(translate,stop);
+    if (kind === 'problem') actions.append(problemCopyButton(target));
+    actions.append(configure);
     bar.append(make('span','双语' + name,'brand'),status,actions); root.append(bar);
     if (kind === 'comment') target.prepend(host); else target.before(host);
     const state = {busy:false, lines:[], shown:false, source:[]};
