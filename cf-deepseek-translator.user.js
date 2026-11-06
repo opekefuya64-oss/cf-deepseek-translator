@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.5.0
-// @description  Codeforces 中文导航。用自己的 DeepSeek 密钥逐段翻译题面、首页博文、个人博客和评论。
+// @version      1.6.0
+// @description  Codeforces 中文导航。用自己的 DeepSeek 密钥翻译题面、博文和评论，整篇显示中文。
 // @license      MIT
 // @match        https://codeforces.com/*
 // @match        https://*.codeforces.com/*
@@ -178,7 +178,12 @@
     }
   }
   const blockSelector = 'div,p,li,ul,ol,section,article,table,thead,tbody,tfoot,tr,td,th,caption,blockquote,h1,h2,h3,h4,h5,h6,dl,dt,dd,center,figure,figcaption';
-  const skipSelector = '[hidden],[aria-hidden="true"],[' + own + '],button,input,textarea,select,form,[contenteditable]:not([contenteditable="false"]),iframe,template,style,noscript,pre,.prettyprint,.source-copier,.ace_editor,.CodeMirror,.monaco-editor,.collapsible-topic-options,.sample-test,.sample-tests,.input-output-copier,.MathJax_Preview,.MJX_Assistive_MathML,.translate-problem-statement,.translate-problem-statement-panel';
+  const skipContent = '[hidden],[aria-hidden="true"],[' + own + '],button,[role="button"],input,textarea,select,form,[contenteditable]:not([contenteditable="false"]),iframe,template,style,noscript,object,embed,video,audio,canvas,.source-copier,.ace_editor,.CodeMirror,.monaco-editor,.collapsible-topic-options,.input-output-copier,.MathJax_Preview,.MJX_Assistive_MathML,.translate-problem-statement,.translate-problem-statement-panel';
+  const skipSelector = skipContent + ',pre,.prettyprint,.sample-test,.sample-tests';
+  function hiddenByStyle(node) {
+    const {display, visibility} = getComputedStyle(node);
+    return display === 'none' || visibility === 'hidden';
+  }
   const visualMath = '.MathJax,.MathJax_Display,.MathJax_CHTML,.MathJax_SVG,.MathJax_SVG_Display,mjx-container,.katex,.katex-display,math';
   const mathScript = 'script[type^="math/tex"]';
   function mathSource(node) {
@@ -206,6 +211,29 @@
     for (const child of node.childNodes) out.append(copySymbol(child));
     return out;
   }
+  function mathSymbol(node) {
+    const math = node.localName === 'math' ? node : node.querySelector('math');
+    const original = mathSource(node);
+    const source = original || math?.textContent || node.textContent || '公式';
+    return {source, build() {
+      if (!math) return make('code', source);
+      const copy = copySymbol(math);
+      if (original) copy.setAttribute('alttext', original);
+      return copy;
+    }};
+  }
+  function illustration(node) {
+    const label = node.getAttribute('alt') || node.querySelector('title')?.textContent || '图见原文';
+    const src = node.currentSrc || node.src;
+    if (node.localName !== 'img' || !/^https?:\/\//i.test(src)) return make('span', '〔' + label + '〕');
+    const img = make('img');
+    img.alt = label;
+    img.loading = 'lazy';
+    img.referrerPolicy = 'no-referrer';
+    for (const attr of ['width','height']) if (node.hasAttribute(attr)) img.setAttribute(attr, node.getAttribute(attr));
+    img.src = src;
+    return img;
+  }
   function extract(nodes) {
     const symbols = [];
     const keep = (hint, build) => {
@@ -218,21 +246,14 @@
       // Codeforces MathJax v2 emits preview + visible frame + math/tex script.
       // Treat the three as one symbol. The assistive MathML keeps fractions and indices.
       if (n.matches(visualMath)) {
-        const math = n.localName === 'math' ? n : n.querySelector('math');
-        const original = mathSource(n);
-        const source = original || math?.textContent || n.textContent || '公式';
-        return keep(source, () => {
-          if (!math) return make('code', source);
-          const copy = copySymbol(math);
-          if (original) copy.setAttribute('alttext', original);
-          return copy;
-        });
+        const {source, build} = mathSymbol(n);
+        return keep(source, build);
       }
       if (n.matches(mathScript)) {
         if (n.previousElementSibling?.matches(visualMath)) return '';
         return keep(n.textContent, () => make('code', n.textContent));
       }
-      if (n.matches(skipSelector + ',script')) return '';
+      if (n.matches(skipSelector + ',script') || hiddenByStyle(n)) return '';
       if (n.matches('.rated-user,a[href*="/profile/"]')) {
         const handle = n.textContent;
         return keep('保留原用户名', () => make('span', handle));
@@ -240,7 +261,7 @@
       if (n.matches('.tex-span,code,tt,.tt,var,sub,sup')) return keep(n.textContent, () => copySymbol(n));
       if (n.matches('img,svg')) {
         const label = n.getAttribute('alt') || n.querySelector('title')?.textContent || '图见原文';
-        return keep(label, () => make('span', '〔' + label + '〕'));
+        return keep(label, () => illustration(n));
       }
       if (n.localName === 'br') return '\n';
       return Array.from(n.childNodes, read).join('');
@@ -261,14 +282,15 @@
   function readRows(target, kind) {
     const rows = [];
     function walk(el) {
-      if (el.matches(skipSelector)) return;
+      if (el.matches(skipSelector) || hiddenByStyle(el)) return;
       if (kind === 'problem' && el.matches('.header')) { const title = el.querySelector('.title'); if (title) walk(title); return; }
       let run = [];
       function flush() {
         if (!run.length) return;
         const {text, symbols} = extract(run);
         if (text && /\p{L}/u.test(text.replace(tokens,''))) {
-          rows.push({text, symbols, after: run[run.length - 1], fixedHeading: el.matches('.section-title') && chineseHeadings.has(text)});
+          rows.push({text, symbols, first: run[0], after: run[run.length - 1],
+            fixedHeading: el.matches('.section-title') && chineseHeadings.has(text)});
         }
         run = [];
       }
@@ -372,21 +394,76 @@
       GM_setValue(CACHE,list);
     } catch { /* Optional cache: storage exhaustion must not prevent translation. */ }
   }
-  function translationLine() {
-    const line = owned(make('span', null, 'cfds-line'));
-    line.lang = 'zh-CN';
-    return line;
+  function translationBlock(tag = 'span') {
+    const block = owned(make(tag, null, 'cfds-line'));
+    block.lang = 'zh-CN';
+    return block;
   }
   function renderRow(row) {
-    const line = translationLine();
+    const content = document.createDocumentFragment();
     const text = row.parts.join(' '); let offset = 0;
     for (const m of text.matchAll(tokens)) {
-      line.append(text.slice(offset,m.index)); line.append(row.symbols[Number(m[1])-1]?.build() || m[0]); offset = m.index + m[0].length;
+      content.append(text.slice(offset,m.index), row.symbols[Number(m[1])-1]?.build() || m[0]);
+      offset = m.index + m[0].length;
     }
-    line.append(text.slice(offset)); row.after.after(line); return line;
+    content.append(text.slice(offset)); return content;
   }
 
-  function problemText(target) {
+  function preformattedText(node) {
+    // Codeforces can wrap each sample line in a div, including empty lines.
+    if (!node.childElementCount || ![...node.children].every(row => row.matches('.test-example-line'))) return node.innerText;
+    const lines = [];
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.ELEMENT_NODE) lines.push(child.innerText);
+      else if (child.nodeType === Node.TEXT_NODE && child.data.trim()) lines.push(child.data.replace(/\n$/, ''));
+    }
+    return lines.join('\n');
+  }
+
+  function renderTranslation(target, kind, rows) {
+    const panel = translationBlock('section');
+    panel.classList.add('cfds-full');
+    panel.setAttribute('aria-label', '全文中文');
+    const translations = new Map(rows.filter(row => !row.fixedHeading).map(row => [row.first, row]));
+    // Rebuild the reading content with passive tags so site IDs, handlers, and widgets stay in the original.
+    function copy(node) {
+      if (node.nodeType === Node.TEXT_NODE) return document.createTextNode(node.data);
+      if (node.nodeType !== Node.ELEMENT_NODE) return null;
+      if (node.matches(visualMath)) return mathSymbol(node).build();
+      if (node.matches(mathScript)) {
+        return node.previousElementSibling?.matches(visualMath) ? null : make('code', node.textContent);
+      }
+      if (node.matches(skipContent + ',script') || hiddenByStyle(node)) return null;
+      if (node.matches('img,svg')) return illustration(node);
+      if (node.localName === 'pre') return make('pre', preformattedText(node));
+      const tag = node.localName;
+      const allowed = node.matches(blockSelector + ',br,hr,a,kbd,samp') || simpleTags.has(tag);
+      const out = allowed ? make(tag) : document.createDocumentFragment();
+      if (allowed) {
+        if (node.matches('.title,.section-title')) out.classList.add('cfds-heading');
+        if (node.matches('.header .title,.topic > .title')) out.classList.add('cfds-main-title');
+        if (node.matches('.property-title')) out.classList.add('property-title');
+        for (const attr of ['start','reversed','type','value','rowspan','colspan']) {
+          if (node.hasAttribute(attr)) out.setAttribute(attr, node.getAttribute(attr));
+        }
+        if (tag === 'a' && /^https?:\/\//i.test(node.href)) out.href = node.href;
+      }
+      for (let child = node.firstChild; child;) {
+        const row = translations.get(child);
+        const part = row ? renderRow(row) : copy(child);
+        if (part) out.append(part);
+        child = (row ? row.after : child).nextSibling;
+      }
+      return out;
+    }
+    for (const root of readingRoots(target, kind)) {
+      const content = copy(root);
+      if (content) panel.append(content);
+    }
+    return panel;
+  }
+
+  function clipboardText(target) {
     const lines = [];
     let inline = '';
     function flush() {
@@ -402,31 +479,19 @@
         return;
       }
       if (node.matches('[hidden],script,style,noscript,template,iframe,button,[role="button"],form,input,select,textarea,.input-output-copier,.source-copier,.MathJax_Preview,.MJX_Assistive_MathML,.translate-problem-statement,.translate-problem-statement-panel')) return;
-      const style = getComputedStyle(node);
-      if (style.display === 'none' || style.visibility === 'hidden') return;
+      if (hiddenByStyle(node)) return;
       if (node.matches(visualMath)) {
         const math = node.localName === 'math' ? node : node.querySelector('math');
         inline += mathSource(node) || (math ? copySymbol(math).outerHTML : node.textContent);
         return;
       }
-      if (node.matches('[aria-hidden="true"]') || (node.hasAttribute(own) && !node.matches('.cfds-line'))) return;
+      if (node.matches('[aria-hidden="true"]') || (node.hasAttribute(own) && node !== target)) return;
       switch (node.localName) {
         case 'br': flush(); return;
-        case 'pre': {
+        case 'pre':
           flush();
-          // Modern samples wrap each input line in a div. Older ones use newlines or <br>.
-          if (node.childElementCount && [...node.children].every(row => row.matches('.test-example-line'))) {
-            const sample = [];
-            for (const child of node.childNodes) {
-              if (child.nodeType === Node.ELEMENT_NODE) sample.push(child.innerText);
-              else if (child.nodeType === Node.TEXT_NODE && child.data.trim()) sample.push(child.data.replace(/\n$/, ''));
-            }
-            lines.push(sample.join('\n'));
-          } else {
-            lines.push(node.innerText);
-          }
+          lines.push(preformattedText(node));
           return;
-        }
         case 'img': {
           const src = node.currentSrc || node.src;
           inline += '〔' + (node.alt || '插图') + (/^https?:\/\//i.test(src) ? ' ' + src : '') + '〕';
@@ -440,7 +505,7 @@
           return;
         case 'tr':
           flush();
-          lines.push(Array.from(node.cells, problemText).join('\t'));
+          lines.push(Array.from(node.cells, clipboardText).join('\t'));
           return;
         case 'ol':
         case 'ul': {
@@ -451,7 +516,7 @@
             if (item.localName !== 'li') { visit(item); continue; }
             flush();
             if (item.hasAttribute('value')) ordinal = item.value;
-            const content = problemText(item);
+            const content = clipboardText(item);
             if (content) lines.push((node.localName === 'ol' ? ordinal + '. ' : '• ') + content);
             ordinal += node.reversed ? -1 : 1;
           }
@@ -471,28 +536,27 @@
     return lines.join('\n');
   }
 
-  function problemCopyButton(target) {
-    const copy = button('复制题目');
-    copy.title = '复制完整题面，含样例和当前显示的中文';
+  function copyButton(label, getText) {
+    const copy = button(label);
     copy.setAttribute('aria-live', 'polite');
     let reset;
     copy.addEventListener('click', async () => {
       clearTimeout(reset);
       copy.disabled = true;
       try {
-        const text = problemText(target);
+        const text = getText();
         if (text.trim()) {
           if (typeof GM !== 'undefined' && typeof GM.setClipboard === 'function') await GM.setClipboard(text, 'text');
           else await navigator.clipboard.writeText(text);
           copy.textContent = '已复制';
         } else {
-          copy.textContent = '没有可复制的题面';
+          copy.textContent = '没有可复制的内容';
         }
       } catch {
         copy.textContent = '复制失败，请重试';
       } finally {
         copy.disabled = false;
-        reset = setTimeout(() => { copy.textContent = '复制题目'; }, 2200);
+        reset = setTimeout(() => { copy.textContent = label; }, 2200);
       }
     });
     return copy;
@@ -507,6 +571,11 @@
     .cfds-line[data-cfds-v1][hidden] { display:none!important }
     .cfds-line code { font-size:.95em }
     .cfds-line math { font-size:1.05em }
+    .cfds-full[data-cfds-v1] { margin:.35em 0 1em; padding:.45em 0 .45em .95em; }
+    .cfds-full .cfds-heading { margin:.75em 0 .25em; font-weight:650; }
+    .cfds-full .cfds-main-title { margin-top:0; font-size:1.2em; }
+    .cfds-full img { max-width:100%; height:auto; }
+    .cfds-full pre { overflow:auto; white-space:pre; background:#f5f7f7; padding:.5em .75em; border-radius:4px; }
     [data-cfds-bold] .cfds-line[data-cfds-v1] { font-weight:550 }
     [data-cfds-framed] .cfds-line[data-cfds-v1] {
       box-sizing:border-box; margin:.4em 0 .85em; padding:.5em .95em;
@@ -569,7 +638,7 @@
     const preview = make('div', null, 'style-preview');
     const source = make('span', 'Print the minimum number of moves.');
     source.lang = 'en';
-    const sample = translationLine();
+    const sample = translationBlock();
     sample.append('输出最少操作次数。');
     preview.append(make('span', '样式预览', 'preview-title'), source, sample);
     applyStyle(preview, currentStyle);
@@ -615,6 +684,14 @@
   const installed = new WeakSet();
   const readingTargets = '.problem-statement,.topic,.comments .comment-content';
   let firstOffered = false;
+  function sameRows(rows, previous) {
+    return rows.length === previous.length && rows.every((row, i) => {
+      const other = previous[i];
+      return row.first === other.first && row.after === other.after && row.text === other.text
+        && row.symbols.length === other.symbols.length
+        && row.symbols.every((symbol, j) => symbol.hint === other.symbols[j].hint);
+    });
+  }
   function mount(target) {
     if (installed.has(target) || target.closest('form,[contenteditable]:not([contenteditable="false"]),pre,code,#sidebar,[' + own + ']')) return;
     const kind = target.matches('.problem-statement') ? 'problem' : target.matches('.topic') ? 'blog' : 'comment';
@@ -640,31 +717,41 @@
     const name = {problem:'题面', blog:'博文', comment:'评论'}[kind];
     const host = owned(make('div')); const root = shell(host);
     const bar = make('div',null,'toolbar'); bar.setAttribute('role','region'); bar.setAttribute('aria-label','CF 双语' + name);
-    const status = make('span','原文与中文逐段对照','status'); status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
+    const status = make('span','一键查看完整中文版','status'); status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
     const action = kind === 'problem' ? '翻译成中文' : '翻译' + name;
     const translate = button(action,'primary'), configure = button('翻译设置'), stop = button('取消');
     stop.hidden = true;
     const actions = make('div',null,'actions'); actions.append(translate,stop);
-    if (kind === 'problem') actions.append(problemCopyButton(target));
-    actions.append(configure);
+    const state = {busy:false, panel:null, source:[]};
+    const visiblePanel = () => target.contains(state.panel) && !state.panel.hidden;
+    if (kind === 'problem') {
+      const copyProblem = copyButton('复制题目', () => {
+        const source = clipboardText(target);
+        return visiblePanel() ? [source, clipboardText(state.panel)].join('\n\n') : source;
+      });
+      copyProblem.title = '复制完整题面和当前显示的中文版';
+      actions.append(copyProblem);
+    }
+    const copyChinese = copyButton('复制中文', () => visiblePanel() ? clipboardText(state.panel) : '');
+    copyChinese.hidden = true;
+    actions.append(copyChinese,configure);
     bar.append(make('span','双语' + name,'brand'),status,actions); root.append(bar);
     if (kind === 'comment') target.prepend(host); else target.before(host);
-    const state = {busy:false, lines:[], shown:false, source:[]};
     function display(on) {
-      state.shown = on;
-      state.lines.forEach(el => { el.hidden = !on; });
+      state.panel.hidden = !on;
+      copyChinese.hidden = !on;
       translate.textContent = on ? '隐藏中文' : '显示中文';
       translate.setAttribute('aria-pressed',String(on));
     }
     async function start() {
       if (state.busy) return;
       const rows = readRows(target, kind);
-      if (state.lines.length) {
+      if (state.panel) {
         // Feed entries may expand or replace their preview in-place after translation.
-        const unchanged = rows.length === state.source.length && rows.every((r, i) =>
-          r.after === state.source[i].after && r.text === state.source[i].text) && state.lines.every(el => el.isConnected);
-        if (unchanged) { display(!state.shown); return; }
-        state.lines.forEach(el => el.remove()); state.lines = [];
+        if (target.contains(state.panel) && sameRows(rows, state.source)) { display(state.panel.hidden); return; }
+        state.panel.remove();
+        state.panel = null;
+        copyChinese.hidden = true;
       }
       const key = savedKey(), selected = model();
       if (!key) { settings(start); return; }
@@ -675,7 +762,7 @@
         if (!rows.some(row => !row.fixedHeading)) throw new Error(name + '中没有找到可翻译的文字。');
         const batches = packetize(rows);
         let fetched = 0;
-        for (const [i,batch] of batches.entries()) {
+        for (const batch of batches) {
           const items = batch.map(b => b.item);
           const signature = [kind === 'problem' ? 1 : kind, selected, items];
           // Refresh old wording only for batches touched by the registration glossary.
@@ -683,7 +770,7 @@
           const sig = JSON.stringify(signature);
           let data = readCache().find(p => Array.isArray(p) && p[0] === sig)?.[1];
           if (!valid(batch,data)) {
-            status.textContent = '正在翻译第 ' + (i+1) + ' / ' + batches.length + ' 批…';
+            status.textContent = '正在翻译全文…';
             data = await callApi(batch,key,selected,controller.signal,kind); fetched++;
             if (!valid(batch,data)) throw new Error('译文缺少段落或公式标记，请重试。');
             cachePut(sig,data);
@@ -691,13 +778,17 @@
           if (controller.signal.aborted) throw new Error('已取消。');
           batch.forEach(({row,index,item}) => { row.parts[index] = data[item.id].trim(); });
         }
-        if (rows.some(r => !r.after.isConnected)) throw new Error('内容刚刚重新排版，请再点一次翻译。');
-        for (const row of rows) if (!row.fixedHeading) state.lines.push(renderRow(row));
+        if (!target.isConnected || !sameRows(rows, readRows(target, kind))) throw new Error('页面内容刚刚更新，请再点一次翻译。');
+        state.panel = renderTranslation(target, kind, rows);
+        if (kind === 'comment') host.after(state.panel);
+        else target.prepend(state.panel);
         state.source = rows;
         display(true);
         status.textContent = fetched ? selected + ' · 已翻译' : '已读取本地译文';
       } catch (e) {
-        state.lines.forEach(el => el.remove()); state.lines = [];
+        state.panel?.remove();
+        state.panel = null;
+        copyChinese.hidden = true;
         status.className = 'status error'; status.textContent = e.message || '翻译失败，请重试。';
         translate.textContent = '重试翻译';
       } finally {
