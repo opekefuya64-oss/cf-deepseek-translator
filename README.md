@@ -6,6 +6,8 @@
 
 已安装旧版的用户可以点击上方的「一键安装篡改猴脚本」，在篡改猴中确认更新，再刷新 Codeforces 页面。
 
+点击页面右上角的 **「夜间模式」** 即可切换深色配色，再点一次恢复浅色。脚本会记住你的选择，刷新或打开其他 Codeforces 页面时也会沿用。
+
 **安装**：在篡改猴「管理面板 → 实用工具」中找到 ZIP 导入，选择 `CF-DeepSeek.zip`，确认导入并启用脚本。也可以在文本编辑器打开 `cf-deepseek-translator.user.js`，复制全部内容，到篡改猴「添加新脚本」中替换模板并按 Ctrl+S 保存。两种方式选一种即可。
 
 **第一次翻译**：打开或刷新一道 HTML 题目，例如 [4A · Watermelon](https://codeforces.com/problemset/problem/4/A)。在「连接 DeepSeek」窗口粘贴你自己的 DeepSeek API Key，保留默认 Flash 模型，点「保存并翻译」。如篡改猴询问是否允许访问翻译服务，目标应为 `api.deepseek.com`。
