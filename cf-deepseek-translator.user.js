@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.7.0
+// @version      1.7.1
 // @description  Codeforces 中文导航和夜间模式。用自己的 DeepSeek 密钥翻译题面、博文和评论，整篇显示中文。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -53,7 +53,7 @@
     return el;
   };
   const button = (label, cls) => { const el = make('button', label, cls); el.type = 'button'; return el; };
-  function addNightSwitch() {
+  function addNightSwitch(repairSurfaces) {
     const toggle = owned(button('夜间模式', 'cfds-night-toggle'));
     const chooser = document.querySelector('#header .lang-chooser');
     if (chooser) {
@@ -67,6 +67,7 @@
       const on = GM_getValue(NIGHT_KEY, false) === true;
       document.documentElement.toggleAttribute('data-cfds-night', on);
       toggle.setAttribute('aria-pressed', String(on));
+      repairSurfaces(on);
     }
     toggle.addEventListener('click', () => {
       GM_setValue(NIGHT_KEY, GM_getValue(NIGHT_KEY, false) !== true);
@@ -74,6 +75,84 @@
     });
     sync();
     return sync;
+  }
+  function nightSurfaceRepair() {
+    const surface = 'data-cfds-night-surface', ink = 'data-cfds-night-ink', edge = 'data-cfds-night-edge';
+    const marked = '[' + surface + '],[' + ink + '],[' + edge + ']';
+    const excluded = '[' + own + '],img,picture,svg,math,canvas,video,iframe,script,style,template,.ace_editor,.monaco-editor';
+    let enabled = false, timer;
+    const pending = new Set();
+    function neutralColor(value) {
+      const parts = value.match(/[\d.]+/g)?.map(Number);
+      if (!parts || parts.length < 3 || (parts[3] ?? 1) < .8) return null;
+      const rgb = parts.slice(0, 3).map(n => n / 255);
+      if (Math.max(...rgb) - Math.min(...rgb) > .18) return null;
+      return rgb.reduce((sum, channel, i) => sum + channel * [.2126,.7152,.0722][i], 0);
+    }
+    function eligible(element) {
+      return element.nodeType === Node.ELEMENT_NODE && !element.closest(excluded);
+    }
+    function repair(roots) {
+      const elements = new Set();
+      for (const root of roots) {
+        if (!root.isConnected || !eligible(root)) continue;
+        elements.add(root);
+        root.querySelectorAll('*').forEach(element => { if (eligible(element)) elements.add(element); });
+      }
+      // Read the site's current styles before marking fixes. Original inline styles stay intact.
+      for (const element of elements) {
+        element.removeAttribute(surface); element.removeAttribute(ink); element.removeAttribute(edge);
+      }
+      const fixes = [];
+      for (const element of elements) {
+        const css = getComputedStyle(element);
+        if (css.display === 'none') continue;
+        const background = neutralColor(css.backgroundColor);
+        const foreground = neutralColor(css.color);
+        const border = ['Top','Right','Bottom','Left'].some(side =>
+          parseFloat(css['border' + side + 'Width']) > 0 && neutralColor(css['border' + side + 'Color']) > .65);
+        if (background > .65 || (foreground !== null && foreground < .57) || border) {
+          fixes.push({element, background:background > .65,
+            foreground:foreground !== null && foreground < .57, muted:foreground > .25, border});
+        }
+      }
+      for (const fix of fixes) {
+        if (fix.background) fix.element.setAttribute(surface, '');
+        if (fix.foreground) fix.element.setAttribute(ink, fix.muted ? 'muted' : 'text');
+        if (fix.border) fix.element.setAttribute(edge, '');
+      }
+    }
+    function queue(root) {
+      if (!eligible(root)) return;
+      pending.add(root);
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const roots = [...pending].filter(node => ![...pending].some(other => other !== node && other.contains(node)));
+        pending.clear();
+        if (enabled) repair(roots);
+      }, 60);
+    }
+    const observer = new MutationObserver(records => {
+      for (const record of records) {
+        if (record.type === 'attributes') queue(record.target);
+        else for (const node of record.addedNodes) if (node.nodeType === Node.ELEMENT_NODE) queue(node);
+      }
+    });
+    return on => {
+      if (on === enabled) return;
+      enabled = on;
+      if (on) {
+        repair([document.body]);
+        observer.observe(document.body, {subtree:true, childList:true, attributes:true,
+          attributeFilter:['style','class','bgcolor','color','hidden']});
+      } else {
+        observer.disconnect();
+        clearTimeout(timer); pending.clear();
+        for (const element of document.querySelectorAll(marked)) {
+          element.removeAttribute(surface); element.removeAttribute(ink); element.removeAttribute(edge);
+        }
+      }
+    };
   }
   const sectionLabels = new Map(Object.entries({
     Input:'输入', Output:'输出', Note:'说明', Notes:'说明', Examples:'样例', Example:'样例',
@@ -636,6 +715,20 @@
         background-color:var(--cfds-page)!important; color:var(--cfds-text)!important;
         accent-color:var(--cfds-accent-text);
       }
+      html[data-cfds-night] :is(#body,#pageContent,#footer) {
+        background-color:var(--cfds-page)!important;
+      }
+      html[data-cfds-night] :is(.problemindexholder,.problem-statement,.topic,.comments,.comment-content,
+          .roundbox-content,.popup,.modal-content,.ui-widget-content,.ui-widget-header,.jqmWindow,
+          #facebox .body,#facebox .footer,.submission-details,.userbox) {
+        background-color:var(--cfds-panel)!important; color:var(--cfds-text)!important;
+        border-color:var(--cfds-border)!important;
+      }
+      html[data-cfds-night] :is(.menu-list-container,.second-level-menu,.second-level-menu-list,
+          .pagination .active,.pagination .page-index.active,.highlighted-row,.welldone,.alert-success) {
+        background:var(--cfds-raised)!important; color:var(--cfds-text)!important;
+        border-color:var(--cfds-border)!important;
+      }
       html[data-cfds-night] :is(#header,#pageContent,#footer,.topic,.comment-content,.ttypography,.problem-statement) {
         color:var(--cfds-text); border-color:var(--cfds-border);
       }
@@ -645,8 +738,8 @@
       html[data-cfds-night] :is(.topic .info,.comment-table .info,.problem-statement .time-limit,.problem-statement .memory-limit,#footer) {
         color:var(--cfds-muted);
       }
-      html[data-cfds-night] a { color:var(--cfds-link); }
-      html[data-cfds-night] a:visited { color:var(--cfds-visited); }
+      html[data-cfds-night] a { color:var(--cfds-link)!important; }
+      html[data-cfds-night] a:visited { color:var(--cfds-visited)!important; }
       html[data-cfds-night] :is(.menu-list,.second-level-menu-list,.caption,.pagination) a {
         color:var(--cfds-link)!important;
       }
@@ -687,6 +780,9 @@
       html[data-cfds-night] :is(input,textarea)::placeholder { color:var(--cfds-muted); opacity:1; }
       html[data-cfds-night] :is(a,button,input,textarea,select):focus-visible { outline:2px solid var(--cfds-focus); outline-offset:2px; }
       html[data-cfds-night] :is(hr,blockquote,.sample-test .title,.sample-test pre) { border-color:var(--cfds-border)!important; }
+      html[data-cfds-night] :is(blockquote,.ttypography blockquote,.cfds-full blockquote) {
+        background-color:var(--cfds-raised)!important; color:var(--cfds-text)!important;
+      }
       html[data-cfds-night] :is(pre,code,.sample-test .input,.sample-test .output,.test-example-line-even) {
         background-color:var(--cfds-code)!important; color:var(--cfds-text)!important;
       }
@@ -698,6 +794,26 @@
       html[data-cfds-night] .prettyprint :is(.typ,.atn) { color:var(--cfds-link); }
       html[data-cfds-night] .prettyprint .com { color:var(--cfds-muted); }
       html[data-cfds-night] .prettyprint :is(.pln,.pun) { color:var(--cfds-text); }
+      html[data-cfds-night] :is(.CodeMirror,.CodeMirror-scroll,.CodeMirror-gutters,.CodeMirror-dialog,.CodeMirror-hints) {
+        background:var(--cfds-code)!important; color:var(--cfds-text)!important; border-color:var(--cfds-border)!important;
+      }
+      html[data-cfds-night] :is(.CodeMirror-cursor,.CodeMirror div.CodeMirror-cursor) { border-left-color:var(--cfds-text)!important; }
+      html[data-cfds-night] .CodeMirror-selected { background:#365271!important; }
+      html[data-cfds-night] :is(.CodeMirror-linenumber,.cm-s-default .cm-comment) { color:var(--cfds-muted)!important; }
+      html[data-cfds-night] :is(.cm-s-default .cm-keyword,.cm-s-default .cm-def) { color:#d7b5ff!important; }
+      html[data-cfds-night] .cm-s-default .cm-string { color:var(--cfds-success)!important; }
+      html[data-cfds-night] .cm-s-default .cm-number { color:var(--cfds-warn)!important; }
+      html[data-cfds-night] :is(.MathJax,.MathJax_Display,.MathJax_CHTML,.MathJax_SVG,.MathJax_SVG_Display,
+          mjx-container,.katex,.tex-span,math) { color:var(--cfds-text)!important; }
+      html[data-cfds-night] :is(.MathJax svg,.MathJax_SVG svg,mjx-container svg) { color:inherit!important; }
+      html[data-cfds-night] [data-cfds-night-surface] {
+        background-color:var(--cfds-panel)!important; background-image:none!important;
+      }
+      html[data-cfds-night] [data-cfds-night-ink="text"] { color:var(--cfds-text)!important; }
+      html[data-cfds-night] [data-cfds-night-ink="muted"] { color:var(--cfds-muted)!important; }
+      html[data-cfds-night] [data-cfds-night-edge] { border-color:var(--cfds-border)!important; }
+      html[data-cfds-night] ::selection { background:#355d79; color:#fff; }
+      html[data-cfds-night] { scrollbar-color:#607487 var(--cfds-page); }
       html[data-cfds-night] .user-black,
       html[data-cfds-night] .user-legendary::first-letter { color:var(--cfds-text)!important; }
       html[data-cfds-night] .user-gray { color:var(--cfds-muted)!important; }
@@ -928,7 +1044,9 @@
   }
   GM_registerMenuCommand('CF 双语题面：翻译设置',() => settings(null));
   applySavedStyle();
-  const syncNightMode = addNightSwitch();
+  document.head.append(make('style', translationCss + nightCss +
+    '.cfds-comment-launch{background:transparent;color:inherit;border:1px solid #83aaa5;border-radius:4px;cursor:pointer;font:12px/1.5 system-ui,sans-serif;padding:1px 7px;margin:0 0 4px}'));
+  const syncNightMode = addNightSwitch(nightSurfaceRepair());
   function syncAppearance() {
     applySavedStyle();
     syncNightMode();
@@ -937,8 +1055,6 @@
     if (!document.hidden) syncAppearance();
   });
   window.addEventListener('pageshow', syncAppearance);
-  document.head.append(make('style', translationCss + nightCss +
-    '.cfds-comment-launch{background:transparent;color:inherit;border:1px solid #83aaa5;border-radius:4px;cursor:pointer;font:12px/1.5 system-ui,sans-serif;padding:1px 7px;margin:0 0 4px}'));
   document.querySelectorAll(uiControls).forEach(localizeControl);
   document.querySelectorAll(readingTargets).forEach(mount);
   new MutationObserver(records => {
