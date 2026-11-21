@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.7.1
+// @version      1.7.2
 // @description  Codeforces 中文导航和夜间模式。用自己的 DeepSeek 密钥翻译题面、博文和评论，整篇显示中文。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -556,6 +556,17 @@
         if (part) out.append(part);
         child = (row ? row.after : child).nextSibling;
       }
+      if (kind === 'problem' && node.matches('.sample-test .input,.sample-test .output')) {
+        const sample = out.querySelector('pre');
+        const heading = out.querySelector(':scope > .cfds-heading');
+        if (sample && heading) {
+          heading.classList.add('cfds-sample-heading');
+          const copySample = copyButton('复制', () => preformattedText(sample));
+          copySample.className = 'cfds-sample-copy';
+          copySample.setAttribute('aria-label', node.classList.contains('input') ? '复制样例输入' : '复制样例输出');
+          heading.append(copySample);
+        }
+      }
       return out;
     }
     for (const root of readingRoots(target, kind)) {
@@ -676,6 +687,16 @@
     .cfds-full[data-cfds-v1] { margin:.35em 0 1em; padding:.45em 0 .45em .95em; }
     .cfds-full .cfds-heading { margin:.75em 0 .25em; font-weight:650; }
     .cfds-full .cfds-main-title { margin-top:0; font-size:1.2em; }
+    .cfds-full .cfds-sample-heading { display:flex; align-items:center; justify-content:space-between; gap:.75em; }
+    .cfds-full .cfds-sample-copy {
+      padding:2px 9px; border:1px solid var(--cfds-control-border,#a7bbbb); border-radius:5px;
+      background:var(--cfds-raised,#f5faf9); color:var(--cfds-text,#20434a);
+      font:500 12px/1.5 system-ui,"Microsoft YaHei",sans-serif; cursor:pointer;
+    }
+    .cfds-full .cfds-sample-copy:hover { border-color:var(--cfds-accent-text,#327267); }
+    .cfds-full .cfds-sample-copy:focus-visible { outline:2px solid var(--cfds-focus,#3b9aaf); outline-offset:2px; }
+    .cfds-full .cfds-sample-copy:disabled { cursor:wait; opacity:.65; }
+    @media print { .cfds-sample-copy { display:none!important; } }
     .cfds-full img { max-width:100%; height:auto; }
     .cfds-full pre { overflow:auto; white-space:pre; background:var(--cfds-code,#f5f7f7); padding:.5em .75em; border-radius:4px; }
     [data-cfds-bold] .cfds-line[data-cfds-v1] { font-weight:550 }
