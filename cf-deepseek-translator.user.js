@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.9.0
+// @version      1.9.1
 // @description  Codeforces 中文导航和夜间模式。用自己的 DeepSeek 密钥翻译题面、博文和评论，整篇显示中文。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -9,7 +9,7 @@
 // @match        https://codeforc.es/*
 // @match        https://*.codeforc.es/*
 // @noframes
-// @run-at       document-idle
+// @run-at       document-start
 // @sandbox      DOM
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -29,6 +29,7 @@
   const KEY = 'cfds.key', MODEL = 'cfds.model', CACHE = 'cfds.cache.v1';
   const STYLE_KEY = 'cfds.translationStyle';
   const NIGHT_KEY = 'cfds.nightMode';
+  startNightTheme();
   const SOUND_KEY = 'cfds.verdictSounds';
   const SOUND_DEFAULTS_KEY = 'cfds.verdictSoundDefaults';
   const bundledSounds = bundledVerdictSounds();
@@ -210,6 +211,26 @@
       check();
     }
     start();
+  }
+
+  function startNightTheme() {
+    function applyTheme() {
+      const root = document.documentElement;
+      root.toggleAttribute('data-cfds-night', GM_getValue(NIGHT_KEY, false) === true);
+      const style = document.createElement('style');
+      style.textContent = nightStyles();
+      (document.head || root).append(style);
+    }
+    if (document.documentElement) {
+      applyTheme();
+    } else {
+      const observer = new MutationObserver(() => {
+        if (!document.documentElement) return;
+        observer.disconnect();
+        applyTheme();
+      });
+      observer.observe(document, {childList:true});
+    }
   }
 
   function addNightSwitch(repairSurfaces) {
@@ -877,7 +898,8 @@
       border-radius:7px; background-color:var(--cfds-accent-surface,rgba(61,148,126,.075)); line-height:1.8;
     }
   `;
-  const nightCss = `
+  function nightStyles() {
+    return `
     .cfds-night-bar { display:flex; justify-content:flex-end; margin:.4rem 0; }
     .cfds-night-toggle[data-cfds-v1] {
       min-height:26px; margin-inline-end:.55em; padding:2px 8px; vertical-align:middle;
@@ -900,6 +922,8 @@
         --cfds-primary:#21655d; --cfds-accent-text:#88e0cc; --cfds-accent-surface:#1b3739;
         --cfds-accent-border:#538c83; --cfds-focus:#87ceff; --cfds-backdrop:#03090fba;
         --cfds-danger:#ff9eaa; --cfds-success:#94dfa9; --cfds-warn:#f6cc83;
+        --cfds-submit-bg:#47351e; --cfds-submit-hover:#594224;
+        --cfds-submit-border:#96703e; --cfds-submit-text:#ffe1a8;
         color-scheme:dark; background-color:var(--cfds-page)!important; color:var(--cfds-text);
       }
       html[data-cfds-night] body {
@@ -1016,10 +1040,12 @@
       html[data-cfds-night] .user-red { color:#ff929d!important; }
     }
   `;
+  }
   const skin = [
     ':host{all:initial;display:block;font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif;color:var(--cfds-text,#1e293b);color-scheme:var(--cfds-scheme,light);--accent:var(--cfds-primary,#134c52)}',
-    '*,*::before,*::after{box-sizing:border-box}button,select,input{font:inherit}button,.submit-link{border:1px solid var(--cfds-control-border,#bbc9ca);border-radius:6px;padding:5px 12px;background:var(--cfds-raised,white);color:var(--cfds-text,#20434a);cursor:pointer;font-weight:550}.submit-link{text-decoration:none}',
-    'button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}button:hover,.submit-link:hover{filter:brightness(.94)}button:focus-visible,.submit-link:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--cfds-focus,#3b9aaf);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}[hidden]{display:none!important}',
+    '*,*::before,*::after{box-sizing:border-box}button,select,input{font:inherit}button,.submit-link{border:1px solid var(--cfds-control-border,#bbc9ca);border-radius:6px;padding:5px 12px;background:var(--cfds-raised,white);color:var(--cfds-text,#20434a);cursor:pointer;font-weight:550}',
+    '.submit-link{background:var(--cfds-submit-bg,#fff2d6);border-color:var(--cfds-submit-border,#dcb56a);color:var(--cfds-submit-text,#713e12);font-weight:650;text-decoration:none}.submit-link:hover{background:var(--cfds-submit-hover,#ffe5ad)}',
+    'button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}button:hover{filter:brightness(.94)}button:focus-visible,.submit-link:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--cfds-focus,#3b9aaf);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}[hidden]{display:none!important}',
     '.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:9px;padding:10px 14px;border:1px solid var(--cfds-border,#bad4d2);border-left:3px solid var(--cfds-accent-text,#267971);border-radius:6px;margin:8px 0 16px;background:var(--cfds-panel,#f5faf9)}',
     '.brand{font-weight:700;color:var(--cfds-accent-text,#224c4c)}.status{flex:1 1 140px;color:var(--cfds-muted,#41595b);font-size:12px}.status.error,.err{color:var(--cfds-danger,#a23226)}.actions{display:flex;gap:6px;flex-wrap:wrap}',
     'dialog{margin:auto;max-width:min(430px,92vw);width:430px;max-height:90vh;padding:24px;border:1px solid var(--cfds-border,#adcbc8);border-radius:12px;color:var(--cfds-text,#20353a);background:var(--cfds-panel,white);box-shadow:0 16px 60px #0005}',
@@ -1529,40 +1555,47 @@
     if (kind === 'problem' && !firstOffered && !savedKey()) { firstOffered = true; settings(start); }
     return start;
   }
-  GM_registerMenuCommand('CF 双语题面：翻译设置',() => settings(null));
-  rememberBundledSounds();
-  watchVerdicts();
-  setupProblemPrefill();
-  applySavedStyle();
-  document.head.append(make('style', translationCss + nightCss +
-    '.cfds-comment-launch{background:transparent;color:inherit;border:1px solid #83aaa5;border-radius:4px;cursor:pointer;font:12px/1.5 system-ui,sans-serif;padding:1px 7px;margin:0 0 4px}'));
-  const syncNightMode = addNightSwitch(nightSurfaceRepair());
-  function syncAppearance() {
+  function initialize() {
+    GM_registerMenuCommand('CF 双语题面：翻译设置',() => settings(null));
+    rememberBundledSounds();
+    watchVerdicts();
+    setupProblemPrefill();
     applySavedStyle();
-    syncNightMode();
-  }
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) syncAppearance();
-  });
-  window.addEventListener('pageshow', syncAppearance);
-  document.querySelectorAll(uiControls).forEach(localizeControl);
-  document.querySelectorAll(readingTargets).forEach(mount);
-  new MutationObserver(records => {
-    const controls = new Set();
-    for (const record of records) {
-      const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
-      const enclosing = target?.closest(uiControls);
-      if (enclosing) controls.add(enclosing);
-      for (const node of record.addedNodes) {
-        if (node.nodeType !== 1 || node.closest(untouchedUi)) continue;
-        if (node.matches(uiControls)) controls.add(node);
-        node.querySelectorAll(uiControls).forEach(control => controls.add(control));
-        if (node.matches(readingTargets)) mount(node);
-        node.querySelectorAll(readingTargets).forEach(mount);
-      }
+    document.head.append(make('style', translationCss +
+      '.cfds-comment-launch{background:transparent;color:inherit;border:1px solid #83aaa5;border-radius:4px;cursor:pointer;font:12px/1.5 system-ui,sans-serif;padding:1px 7px;margin:0 0 4px}'));
+    const syncNightMode = addNightSwitch(nightSurfaceRepair());
+    function syncAppearance() {
+      applySavedStyle();
+      syncNightMode();
     }
-    controls.forEach(localizeControl);
-  }).observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['value','title','aria-label']});
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) syncAppearance();
+    });
+    window.addEventListener('pageshow', syncAppearance);
+    document.querySelectorAll(uiControls).forEach(localizeControl);
+    document.querySelectorAll(readingTargets).forEach(mount);
+    new MutationObserver(records => {
+      const controls = new Set();
+      for (const record of records) {
+        const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+        const enclosing = target?.closest(uiControls);
+        if (enclosing) controls.add(enclosing);
+        for (const node of record.addedNodes) {
+          if (node.nodeType !== 1 || node.closest(untouchedUi)) continue;
+          if (node.matches(uiControls)) controls.add(node);
+          node.querySelectorAll(uiControls).forEach(control => controls.add(control));
+          if (node.matches(readingTargets)) mount(node);
+          node.querySelectorAll(readingTargets).forEach(mount);
+        }
+      }
+      controls.forEach(localizeControl);
+    }).observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['value','title','aria-label']});
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initialize, {once:true});
+  } else {
+    initialize();
+  }
 
   function bundledVerdictSounds() {
     return {
