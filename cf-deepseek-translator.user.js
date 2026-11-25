@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.8.3
+// @version      1.8.4
 // @description  Codeforces 中文导航和夜间模式。用自己的 DeepSeek 密钥翻译题面、博文和评论，整篇显示中文。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -699,7 +699,12 @@
     .cfds-full .cfds-sample-copy:hover { border-color:var(--cfds-accent-text,#327267); }
     .cfds-full .cfds-sample-copy:focus-visible { outline:2px solid var(--cfds-focus,#3b9aaf); outline-offset:2px; }
     .cfds-full .cfds-sample-copy:disabled { cursor:wait; opacity:.65; }
-    @media print { .cfds-sample-copy { display:none!important; } }
+    .cfds-verdict-audio[data-cfds-v1] {
+      margin-inline-start:.5em; padding:2px 7px; border:1px solid var(--cfds-control-border,#a7bbbb);
+      border-radius:5px; background:var(--cfds-panel,#f5faf9); color:var(--cfds-text,#20434a);
+      font:500 12px/1.5 system-ui,"Microsoft YaHei",sans-serif; cursor:pointer;
+    }
+    @media print { .cfds-sample-copy,.cfds-verdict-audio { display:none!important; } }
     .cfds-full img { max-width:100%; height:auto; }
     .cfds-full pre { overflow:auto; white-space:pre; background:var(--cfds-code,#f5f7f7); padding:.5em .75em; border-radius:4px; }
     [data-cfds-bold] .cfds-line[data-cfds-v1] { font-weight:550 }
@@ -893,17 +898,25 @@
     soundContext ??= new AudioContext();
     return soundContext.resume();
   }
-  async function playVerdictSound(data, accepted) {
-    await unlockSound();
+  function decodeSound(data) {
     const bytes = Uint8Array.from(atob(data.slice(data.indexOf(',') + 1)), ch => ch.charCodeAt(0));
-    const clip = await soundContext.decodeAudioData(bytes.buffer);
+    return soundContext.decodeAudioData(bytes.buffer);
+  }
+  async function playVerdictSound(data, fallback) {
+    await unlockSound();
+    let clip;
+    try { clip = await decodeSound(data); }
+    catch (error) {
+      if (!fallback || data === fallback) throw error;
+      clip = await decodeSound(fallback);
+    }
     if (playingSound) playingSound.stop();
     const sound = soundContext.createBufferSource();
     sound.buffer = clip;
     sound.connect(soundContext.destination);
     sound.onended = () => { if (playingSound === sound) playingSound = null; };
     playingSound = sound;
-    sound.start(0, 0, accepted ? clip.duration / 2 : clip.duration);
+    sound.start(0, 0, clip.duration);
   }
   function readSound(file) {
     if (!file) return Promise.resolve('');
@@ -956,7 +969,7 @@
           const data = await readSound(choose.files[0]) || current[key];
           if (!data) { message.textContent = '请先选择音频。'; return; }
           if (!section.isConnected) return;
-          await playVerdictSound(data, key === 'ac');
+          await playVerdictSound(data);
           message.textContent = '';
         } catch { message.textContent = '无法播放，请检查音频格式。'; }
       });
@@ -965,7 +978,7 @@
       section.append(caption, name, choose, actions);
       return choose;
     }
-    const ac = audioInput('ac', 'AC 音效（播放前半段）');
+    const ac = audioInput('ac', 'AC 音效');
     const other = audioInput('other', '非 AC 音效');
     section.append(message);
     function hasChanges() {
@@ -991,12 +1004,57 @@
     return {section, hasChanges, readChanges};
   }
 
+  function finalVerdict(cell) {
+    const visible = selector => [...cell.querySelectorAll(selector)].filter(node =>
+      !node.closest('[hidden],[aria-hidden="true"]') && node.getClientRects().length && !hiddenByStyle(node));
+    const text = cell.innerText.trim().replace(/\s+/g, ' ');
+    if (/^(?:pretests passed|passed pretests|предтесты пройдены|预测试通过)(?=\s|[.!，。]|$)/i.test(text)) return null;
+    // The live verdict text can update while the wrapper still has an older verdict value.
+    if (/^(?:wrong answer|(?:time|memory|idleness) limit exceeded|compilation error|runtime error|presentation error|judg(?:e)?ment failed|partially accepted|rejected|skipped|hacked|challenged)\b|^(?:неправильный ответ|ошибка компиляции|ошибка выполнения|превышено ограничение|答案错误|编译错误|运行错误|运行超时|超出时间限制|超出内存限制)/i.test(text)
+      || /^(?:wa|tle|mle|ce|re|pe|ile)$/i.test(text)) return 'other';
+    if (/^(?:AC|Accepted|Принято|通过)$/i.test(text)) return 'ac';
+    if (/^(?:in queue|running|testing|judging|waiting|submitted|в очереди|выполняется|тестируется|排队|评测中)/i.test(text)
+      || cell.matches('.verdict-running,.verdict-waiting') || visible('.verdict-running,.verdict-waiting').length) return null;
+    const failed = /^(FAILED|PARTIAL|COMPILATION_ERROR|RUNTIME_ERROR|WRONG_ANSWER|PRESENTATION_ERROR|TIME_LIMIT_EXCEEDED|MEMORY_LIMIT_EXCEEDED|IDLENESS_LIMIT_EXCEEDED|SECURITY_VIOLATED|CRASHED|INPUT_PREPARATION_CRASHED|CHALLENGED|SKIPPED|REJECTED|WA|TLE|MLE|CE|RE|PE|ILE)$/;
+    const codeNode = visible('[submissionverdict],[data-verdict]')[0] || cell;
+    const code = (codeNode.getAttribute('submissionverdict') || codeNode.getAttribute('data-verdict') || '')
+      .trim().toUpperCase().replace(/[ -]+/g, '_');
+    if (failed.test(code) || cell.matches('.verdict-rejected,.verdict-failed') || visible('.verdict-rejected,.verdict-failed,.verdict-wrong-answer').length) return 'other';
+    if (/^(OK|AC|ACCEPTED)$/.test(code) || cell.matches('.verdict-accepted') || visible('.verdict-accepted').length) return 'ac';
+    return null;
+  }
+
+  function playResultSound(cell, clip, fallback, played) {
+    const retry = owned(button('播放评测音效', 'cfds-verdict-audio'));
+    let starting = false;
+    function show(label) {
+      retry.textContent = label;
+      if (!retry.isConnected) cell.append(retry);
+    }
+    async function start() {
+      // A resume request can remain pending until the user clicks the results page.
+      if (starting) { unlockSound().catch(() => {}); return; }
+      starting = true;
+      try {
+        const playback = playVerdictSound(clip, fallback);
+        if (soundContext?.state !== 'running') show('播放评测音效');
+        await playback;
+        retry.remove();
+        played();
+      } catch { show('重试评测音效'); }
+      finally { starting = false; }
+    }
+    retry.addEventListener('click', start);
+    start();
+  }
+
   function watchVerdicts() {
     const storageKey = 'cfds.pendingVerdict.v1';
+    const lastPlayedKey = 'cfds.lastVerdictSound';
     const submitPage = /^(\/(?:group\/[^/]+\/)?(?:contest|gym)\/\d+|\/problemset)\/submit\/?$/;
     const resultPage = /\/(?:my|status)(?:\/|$)|^\/submissions\//;
-    const verdictSelector = '.submissionVerdictWrapper,[submissionverdict]';
-    const failed = /^(FAILED|PARTIAL|COMPILATION_ERROR|RUNTIME_ERROR|WRONG_ANSWER|PRESENTATION_ERROR|TIME_LIMIT_EXCEEDED|MEMORY_LIMIT_EXCEEDED|IDLENESS_LIMIT_EXCEEDED|SECURITY_VIOLATED|CRASHED|INPUT_PREPARATION_CRASHED|CHALLENGED|SKIPPED|REJECTED)$/;
+    const verdictSelector = '.submissionVerdictWrapper,[submissionverdict],[data-verdict]';
+    let playingId;
     const handleOf = link => link?.pathname.match(/^\/profile\/([^/]+)\/?$/i)?.[1].toLowerCase();
     const currentHandle = () => document.querySelector('meta[name="handle"]')?.content?.trim().toLowerCase()
       || handleOf(document.querySelector('#header .lang-chooser a[href*="/profile/"]'));
@@ -1007,10 +1065,10 @@
       } catch { return null; }
     };
     function rowTimeMatches(row, requested) {
-      const stamp = row.cells[1]?.querySelector('.format-time,time');
-      if (!stamp) return null;
+      const timeCell = row.cells[1];
+      const stamp = timeCell?.querySelector('.format-time,time');
       const offset = document.querySelector('meta[name="utc_offset"]')?.content || '+03:00';
-      const values = [stamp.getAttribute('datetime'), stamp.getAttribute('title'), stamp.textContent];
+      const values = [stamp?.getAttribute('datetime'), stamp?.getAttribute('title'), stamp?.textContent || timeCell?.textContent];
       let readable = false;
       for (const value of values) {
         if (!value) continue;
@@ -1039,10 +1097,13 @@
         const id = candidate.dataset.submissionId;
         if (!/^\d+$/.test(id)) return false;
         if (item.id) return id === item.id;
-        const author = candidate.querySelector('.rated-user[href^="/profile/"], a[href^="/profile/"]');
-        const problem = candidate.querySelector('td[data-problemid],.problem-cell')?.textContent.trim();
-        if (handleOf(author) !== item.handle || Number(id) <= item.previous
-          || (item.index && problem?.split(/\s*[-–.]\s/, 1)[0] !== item.index)) return false;
+        const authors = candidate.cells[2]?.querySelectorAll('a[href*="/profile/"]') || [];
+        const problem = candidate.querySelector('td[data-problemid],.problem-cell') || candidate.cells[3];
+        const problemLink = problem?.querySelector('a[href*="/problem/"]');
+        const index = problemLink?.pathname.match(/\/problem\/(?:\d+\/)?([a-z]\w*)\/?$/i)?.[1]
+          || problem?.textContent.trim().match(/^([a-z]\w*)(?=\s|[-–.]|$)/i)?.[1];
+        if (![...authors].some(author => handleOf(author) === item.handle) || Number(id) <= item.previous
+          || (item.index && index?.toUpperCase() !== item.index.toUpperCase())) return false;
         return rowTimeMatches(candidate, item.time) ?? freshRedirect;
       });
       const row = rows.reduce((latest, candidate) =>
@@ -1052,40 +1113,47 @@
         item.id = row.dataset.submissionId;
         sessionStorage.setItem(storageKey, JSON.stringify(item));
       }
-      const verdict = row.querySelector(verdictSelector);
-      if (!verdict) return;
-      const code = verdict.getAttribute('submissionverdict')?.toUpperCase() || '';
-      if (verdict.querySelector('.verdict-running,.verdict-waiting')) return;
-      const accepted = code === 'OK' || !!verdict.querySelector('.verdict-accepted');
-      const rejected = failed.test(code) || !!verdict.querySelector('.verdict-rejected,.verdict-failed');
-      if ((!accepted && !rejected) || (accepted && /pretests|предтест|预测试/i.test(verdict.textContent))) return;
-      const sounds = savedSounds(), clip = sounds[accepted ? 'ac' : 'other'];
-      sessionStorage.removeItem(storageKey);
-      if (sounds.enabled === false || !clip) return;
-      // If Chrome suspends audio after navigation, resume on the next click.
-      playVerdictSound(clip, accepted).catch(() => {});
-      if (soundContext.state === 'suspended') {
-        document.addEventListener('click', () => unlockSound().catch(() => {}), {once:true, capture:true});
+      if (playingId === item.id) return;
+      const node = row.querySelector(verdictSelector);
+      const cell = row.querySelector('td.status-verdict-cell,.verdict-cell') || node?.closest('td') || node;
+      const result = cell && finalVerdict(cell);
+      if (!result) return;
+      const sounds = savedSounds();
+      if (sounds.enabled === false || !sounds[result]) {
+        sessionStorage.removeItem(storageKey);
+        return;
       }
+      playingId = item.id;
+      playResultSound(cell, sounds[result], bundledSounds[result], () => {
+        sessionStorage.setItem(lastPlayedKey, item.id);
+        if (pending()?.id === item.id) sessionStorage.removeItem(storageKey);
+      });
     }
-    document.addEventListener('submit', event => {
+    function trackSubmission(event) {
       const form = event.target;
+      if (!(form instanceof HTMLFormElement)) return;
       if ((event.submitter?.getAttribute('formmethod') || form.method).toLowerCase() !== 'post') return;
       const action = new URL(event.submitter?.getAttribute('formaction') || form.action, location.href);
       const scope = action.pathname.match(submitPage)?.[1], handle = currentHandle();
       const sounds = savedSounds();
       if (action.origin !== location.origin || !scope || !handle || sounds.enabled === false || !(sounds.ac || sounds.other)) return;
-      const previous = Math.max(0, ...[...document.querySelectorAll('tr[data-submission-id]')].map(row => Number(row.dataset.submissionId) || 0));
+      const knownIds = [sessionStorage.getItem(lastPlayedKey), pending()?.id];
+      document.querySelectorAll('tr[data-submission-id]').forEach(row => knownIds.push(row.dataset.submissionId));
+      const previous = Math.max(0, ...knownIds.map(id => Number(id) || 0));
       const index = form.elements.namedItem('submittedProblemIndex')?.value?.trim();
       sessionStorage.setItem(storageKey, JSON.stringify({scope, handle, previous, index, from:location.pathname, time:Date.now()}));
       unlockSound().catch(() => {});
-    }, true);
+    }
+    document.addEventListener('submit', trackSubmission, true);
+    // Native form.submit() skips the submit event but still constructs the form data.
+    document.addEventListener('formdata', trackSubmission, true);
     if (!resultPage.test(location.pathname) || !pending()) return;
     const observer = new MutationObserver(() => {
       if (pending()) check();
       else observer.disconnect();
     });
-    observer.observe(document.body, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['submissionverdict']});
+    observer.observe(document.body, {subtree:true, childList:true, characterData:true, attributes:true,
+      attributeFilter:['submissionverdict','data-verdict','data-submission-id','class','hidden','style','aria-hidden']});
     check();
   }
   // API keys live in the userscript manager's storage, never in the script or page storage.
@@ -1331,7 +1399,7 @@
   function bundledVerdictSounds() {
     return {
       id:'klee-nailong-v1',
-      acName:'可莉登场（前半段）',
+      acName:'可莉登场',
       otherName:'奶龙大笑',
       ac: [
         'data:audio/wav;base64,',
