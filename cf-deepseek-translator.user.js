@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.7.2
+// @version      1.8.0
 // @description  Codeforces 中文导航和夜间模式。用自己的 DeepSeek 密钥翻译题面、博文和评论，整篇显示中文。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -29,6 +29,8 @@
   const KEY = 'cfds.key', MODEL = 'cfds.model', CACHE = 'cfds.cache.v1';
   const STYLE_KEY = 'cfds.translationStyle';
   const NIGHT_KEY = 'cfds.nightMode';
+  const SOUND_KEY = 'cfds.verdictSounds';
+  const bundledSounds = {}; // PERSONAL_SOUND_DEFAULTS
   const model = () => GM_getValue(MODEL, 'deepseek-flash');
   const savedKey = () => GM_getValue(KEY, '');
   function savedStyle() {
@@ -866,6 +868,198 @@
     const root = host.attachShadow({mode:'closed'});
     root.append(make('style',skin)); return root;
   }
+  const savedSounds = () => GM_getValue(SOUND_KEY, bundledSounds);
+  let soundContext, playingSound;
+  function unlockSound() {
+    soundContext ??= new AudioContext();
+    return soundContext.resume();
+  }
+  async function playVerdictSound(data, accepted) {
+    await unlockSound();
+    const bytes = Uint8Array.from(atob(data.slice(data.indexOf(',') + 1)), ch => ch.charCodeAt(0));
+    const clip = await soundContext.decodeAudioData(bytes.buffer);
+    if (playingSound) playingSound.stop();
+    const sound = soundContext.createBufferSource();
+    sound.buffer = clip;
+    sound.connect(soundContext.destination);
+    sound.onended = () => { if (playingSound === sound) playingSound = null; };
+    playingSound = sound;
+    sound.start(0, 0, accepted ? clip.duration / 2 : clip.duration);
+  }
+  function readSound(file) {
+    if (!file) return Promise.resolve('');
+    if (file.size > 2_000_000) return Promise.reject(new Error('请选择不超过 2 MB 的音频。'));
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('读取音频失败。'));
+      reader.readAsDataURL(file);
+    });
+  }
+  function soundSettings() {
+    if (closeSettings) closeSettings();
+    const host = owned(make('div')), root = shell(host);
+    const dialog = make('dialog'), form = make('form');
+    const title = make('h2', '评测音效');
+    title.id = 'cfds-sound-title';
+    dialog.setAttribute('aria-labelledby', title.id);
+    const current = savedSounds();
+    const message = make('p', '', 'err');
+    message.setAttribute('role', 'status');
+    const enabled = make('input');
+    enabled.type = 'checkbox';
+    enabled.checked = current.enabled ?? Boolean(current.ac || current.other);
+    const enableLabel = make('label');
+    enableLabel.append(enabled, ' 播放评测音效');
+    form.append(title, enableLabel);
+    function audioInput(key, label) {
+      const choose = make('input');
+      choose.type = 'file';
+      choose.accept = 'audio/*,.wav,.mp3,.ogg,.m4a';
+      choose.id = 'cfds-sound-' + key;
+      const caption = make('label', label);
+      caption.htmlFor = choose.id;
+      const preview = button('试听');
+      preview.addEventListener('click', async () => {
+        try {
+          const ready = unlockSound();
+          const data = await readSound(choose.files[0]) || current[key];
+          if (!data) { message.textContent = '请先选择音频。'; return; }
+          await ready;
+          await playVerdictSound(data, key === 'ac');
+          message.textContent = '';
+        } catch { message.textContent = '无法播放，请检查音频格式。'; }
+      });
+      form.append(caption, choose, preview);
+      if (current[key]) form.append(make('p', '已配置音频，留空可沿用。', 'muted'));
+      return choose;
+    }
+    const ac = audioInput('ac', 'AC 音效（播放前半段）');
+    const other = audioInput('other', '非 AC 音效');
+    const buttons = make('div', null, 'buttons'), save = button('保存', 'primary'), cancel = button('取消');
+    save.type = 'submit';
+    buttons.append(save, cancel);
+    form.append(message, buttons);
+    function close() { dialog.close(); host.remove(); closeSettings = null; }
+    cancel.addEventListener('click', close);
+    dialog.addEventListener('close', () => { if (host.isConnected) close(); });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      save.disabled = true;
+      try {
+        const [newAc, newOther] = await Promise.all([readSound(ac.files[0]), readSound(other.files[0])]);
+        if (!host.isConnected) return;
+        const sounds = {enabled:enabled.checked, ac:newAc || current.ac, other:newOther || current.other};
+        if (sounds.enabled && !sounds.ac && !sounds.other) { message.textContent = '请至少选择一个音效。'; return; }
+        GM_setValue(SOUND_KEY, sounds);
+        close();
+      } catch (error) { message.textContent = error.message || '保存音效失败。'; }
+      finally { save.disabled = false; }
+    });
+    dialog.append(form);
+    root.append(dialog);
+    document.body.append(host);
+    closeSettings = close;
+    dialog.showModal();
+  }
+
+  function watchVerdicts() {
+    const storageKey = 'cfds.pendingVerdict.v1';
+    const submitPage = /^(\/(?:group\/[^/]+\/)?(?:contest|gym)\/\d+|\/problemset)\/submit\/?$/;
+    const resultPage = /\/(?:my|status)(?:\/|$)|^\/submissions\//;
+    const verdictSelector = '.submissionVerdictWrapper,[submissionverdict]';
+    const failed = /^(FAILED|PARTIAL|COMPILATION_ERROR|RUNTIME_ERROR|WRONG_ANSWER|PRESENTATION_ERROR|TIME_LIMIT_EXCEEDED|MEMORY_LIMIT_EXCEEDED|IDLENESS_LIMIT_EXCEEDED|SECURITY_VIOLATED|CRASHED|INPUT_PREPARATION_CRASHED|CHALLENGED|SKIPPED|REJECTED)$/;
+    const handleOf = link => link?.pathname.match(/^\/profile\/([^/]+)\/?$/i)?.[1].toLowerCase();
+    const currentHandle = () => document.querySelector('meta[name="handle"]')?.content?.trim().toLowerCase()
+      || handleOf(document.querySelector('#header .lang-chooser a[href*="/profile/"]'));
+    const pending = () => {
+      try {
+        const item = JSON.parse(sessionStorage.getItem(storageKey));
+        return item && Date.now() - item.time < (item.id ? 86_400_000 : 180_000) ? item : null;
+      } catch { return null; }
+    };
+    function rowTimeMatches(row, requested) {
+      const stamp = row.cells[1]?.querySelector('.format-time,time');
+      if (!stamp) return null;
+      const offset = document.querySelector('meta[name="utc_offset"]')?.content || '+03:00';
+      const values = [stamp.getAttribute('datetime'), stamp.getAttribute('title'), stamp.textContent];
+      let readable = false;
+      for (const value of values) {
+        if (!value) continue;
+        const text = value.trim().replace(/^(\d{2})\.(\d{2})\.(\d{4})/, '$2/$1/$3');
+        const earliest = /:\d{2}:\d{2}/.test(text)
+          ? requested - 3000 : Math.floor((requested - 3000) / 60000) * 60000;
+        for (const date of [Date.parse(text), Date.parse(text + ' ' + offset)]) {
+          if (Number.isFinite(date)) readable = true;
+          if (date >= earliest && date <= requested + 180_000) return true;
+        }
+      }
+      return readable ? false : null;
+    }
+    function check() {
+      if (!resultPage.test(location.pathname)) return;
+      const item = pending();
+      if (!item || (currentHandle() && currentHandle() !== item.handle)) return;
+      if (item.scope !== '/problemset' && !location.pathname.startsWith(item.scope + '/')) return;
+      // During some contests the time column shows elapsed time instead of a date.
+      // Only use that row on the immediate redirect from our own submission form.
+      const from = document.referrer && new URL(document.referrer);
+      const freshRedirect = /\/my\/?$/.test(location.pathname) && Date.now() - item.time < 30_000
+        && from?.origin === location.origin && from.pathname === item.from
+        && performance.getEntriesByType('navigation')[0]?.redirectCount > 0;
+      const rows = [...document.querySelectorAll('tr[data-submission-id]')].filter(candidate => {
+        const id = candidate.dataset.submissionId;
+        if (!/^\d+$/.test(id)) return false;
+        if (item.id) return id === item.id;
+        const author = candidate.querySelector('.rated-user[href^="/profile/"], a[href^="/profile/"]');
+        const problem = candidate.querySelector('td[data-problemid],.problem-cell')?.textContent.trim();
+        if (handleOf(author) !== item.handle || Number(id) <= item.previous
+          || (item.index && problem?.split(/\s*[-–.]\s/, 1)[0] !== item.index)) return false;
+        return rowTimeMatches(candidate, item.time) ?? freshRedirect;
+      });
+      const row = rows.reduce((latest, candidate) =>
+        !latest || Number(candidate.dataset.submissionId) > Number(latest.dataset.submissionId) ? candidate : latest, null);
+      if (!row) return;
+      if (!item.id) {
+        item.id = row.dataset.submissionId;
+        sessionStorage.setItem(storageKey, JSON.stringify(item));
+      }
+      const verdict = row.querySelector(verdictSelector);
+      if (!verdict) return;
+      const code = verdict.getAttribute('submissionverdict')?.toUpperCase() || '';
+      if (verdict.querySelector('.verdict-running,.verdict-waiting')) return;
+      const accepted = code === 'OK' || !!verdict.querySelector('.verdict-accepted');
+      const rejected = failed.test(code) || !!verdict.querySelector('.verdict-rejected,.verdict-failed');
+      if ((!accepted && !rejected) || (accepted && /pretests|предтест|预测试/i.test(verdict.textContent))) return;
+      const sounds = savedSounds(), clip = sounds[accepted ? 'ac' : 'other'];
+      sessionStorage.removeItem(storageKey);
+      if (sounds.enabled === false || !clip) return;
+      // If Chrome suspends audio after navigation, resume on the next click.
+      playVerdictSound(clip, accepted).catch(() => {});
+      if (soundContext.state === 'suspended') {
+        document.addEventListener('click', () => unlockSound().catch(() => {}), {once:true, capture:true});
+      }
+    }
+    document.addEventListener('submit', event => {
+      const form = event.target;
+      if ((event.submitter?.getAttribute('formmethod') || form.method).toLowerCase() !== 'post') return;
+      const action = new URL(event.submitter?.getAttribute('formaction') || form.action, location.href);
+      const scope = action.pathname.match(submitPage)?.[1], handle = currentHandle();
+      const sounds = savedSounds();
+      if (action.origin !== location.origin || !scope || !handle || sounds.enabled === false || !(sounds.ac || sounds.other)) return;
+      const previous = Math.max(0, ...[...document.querySelectorAll('tr[data-submission-id]')].map(row => Number(row.dataset.submissionId) || 0));
+      const index = form.elements.namedItem('submittedProblemIndex')?.value?.trim();
+      sessionStorage.setItem(storageKey, JSON.stringify({scope, handle, previous, index, from:location.pathname, time:Date.now()}));
+      unlockSound().catch(() => {});
+    }, true);
+    if (!resultPage.test(location.pathname) || !pending()) return;
+    const observer = new MutationObserver(() => {
+      if (pending()) check();
+      else observer.disconnect();
+    });
+    observer.observe(document.body, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['submissionverdict']});
+    check();
+  }
   // API keys live in the userscript manager's storage, never in the script or page storage.
   let closeSettings = null;
   function settings(onTranslate) {
@@ -1063,7 +1257,9 @@
     if (kind === 'problem' && !firstOffered && !savedKey()) { firstOffered = true; settings(start); }
     return start;
   }
+  GM_registerMenuCommand('CF 双语题面：评测音效', soundSettings);
   GM_registerMenuCommand('CF 双语题面：翻译设置',() => settings(null));
+  watchVerdicts();
   applySavedStyle();
   document.head.append(make('style', translationCss + nightCss +
     '.cfds-comment-launch{background:transparent;color:inherit;border:1px solid #83aaa5;border-radius:4px;cursor:pointer;font:12px/1.5 system-ui,sans-serif;padding:1px 7px;margin:0 0 4px}'));
