@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.8.4
+// @version      1.9.0
 // @description  Codeforces 中文导航和夜间模式。用自己的 DeepSeek 密钥翻译题面、博文和评论，整篇显示中文。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -56,6 +56,162 @@
     return el;
   };
   const button = (label, cls) => { const el = make('button', label, cls); el.type = 'button'; return el; };
+  const submitPage = /^(\/(?:group\/[\w-]+\/)?(?:contest|gym)\/\d+|\/problemset|\/problemsets\/[\w-]+)\/submit\/?$/;
+
+  function problemContext(path) {
+    if (typeof path !== 'string') return null;
+    const archive = path.match(/^(\/problemset|\/problemsets\/[\w-]+)\/problem\/(\d+)\/([a-z0-9]+)\/?$/i);
+    const scoped = path.match(/^(\/(?:group\/[\w-]+\/)?(?:contest|gym)\/(\d+))\/problem\/([a-z0-9]+)\/?$/i);
+    const match = archive || scoped;
+    if (!match) return null;
+    const [, scope, contest, rawIndex] = match;
+    const index = rawIndex.toUpperCase();
+    return {path, scope, contest, index, code:contest + index, archive:!!archive};
+  }
+
+  function submitProblemLink(problem) {
+    const link = make('a', '提交这题', 'submit-link');
+    const url = new URL(problem.scope + '/submit', location.origin);
+    if (problem.archive) {
+      url.searchParams.set('contestId', problem.contest);
+      url.searchParams.set('problemIndex', problem.index);
+    } else {
+      url.searchParams.set('submittedProblemIndex', problem.index);
+    }
+    url.hash = new URLSearchParams({'cfds-problem':problem.path}).toString();
+    link.href = url.href;
+    return link;
+  }
+
+  function setupProblemPrefill() {
+    const recentKey = 'cfds.recentProblem';
+    const current = problemContext(location.pathname);
+    if (current) {
+      const remember = () => {
+        try { sessionStorage.setItem(recentKey, JSON.stringify({path:current.path, time:Date.now()})); }
+        catch { /* The submit shortcut carries its own problem context. */ }
+      };
+      remember();
+      window.addEventListener('pageshow', remember);
+      return;
+    }
+    const scope = location.pathname.match(submitPage)?.[1];
+    if (!scope) return;
+    const referrer = document.referrer && new URL(document.referrer);
+    const linked = new URLSearchParams(location.hash.slice(1)).get('cfds-problem');
+    const direct = problemContext(linked || (referrer?.origin === location.origin ? referrer.pathname : null));
+    let recent;
+    try {
+      const item = JSON.parse(sessionStorage.getItem(recentKey));
+      if (item && Date.now() - item.time < 3_600_000) recent = problemContext(item.path);
+    } catch { /* Ignore storage unavailable or written by an older version. */ }
+    const problem = direct || recent;
+    if (!problem) return;
+    const fromMainArchive = problem.scope === '/problemset';
+    const fromContest = problem.scope === '/contest/' + problem.contest;
+    if (problem.scope !== scope && !(fromMainArchive && scope === '/contest/' + problem.contest)
+      && !(fromContest && scope === '/problemset')) return;
+
+    const hint = owned(make('div', null, 'cfds-submit-hint'));
+    const status = make('span');
+    status.setAttribute('role', 'status');
+    const apply = button('填入 ' + problem.code);
+    hint.append(status, apply);
+    const automatic = !!direct;
+    let override = false, changing = false, cancelled = false;
+    let watchedForm, timeout;
+    const observer = new MutationObserver(check);
+    function writable(field) {
+      return !!field?.matches?.('select,input:not([type]),input[type="text"],input[type="search"],input[type="number"]') && !field.readOnly;
+    }
+    function selectedValue(field, candidates) {
+      if (field.disabled) return null;
+      if (field.tagName !== 'SELECT') return candidates[0];
+      const options = [...field.options].filter(option => !option.matches(':disabled'));
+      for (const value of candidates) {
+        const exact = options.find(option => option.value.toUpperCase() === value.toUpperCase());
+        if (exact) return exact.value;
+      }
+      if (candidates.includes('main') && options.some(option => option.value === ''
+          && /^(Main|主站题库|主站|Основные)$/i.test(option.text.trim()))) return '';
+      return null;
+    }
+    function show(message, action) {
+      if (status.textContent !== message) status.textContent = message;
+      apply.hidden = !action;
+      if (!hint.isConnected) watchedForm.before(hint);
+    }
+    function check() {
+      if (changing || cancelled) return;
+      const form = [...document.forms].find(item => {
+        if (item.method !== 'post' || !(item.elements.namedItem('submittedProblemCode')
+          || item.elements.namedItem('submittedProblemIndex'))) return false;
+        try {
+          const action = new URL(item.action);
+          return action.origin === location.origin && action.pathname.match(submitPage)?.[1] === scope;
+        } catch { return false; }
+      });
+      if (!form) return;
+      watchedForm = form;
+      const code = form.elements.namedItem('submittedProblemCode');
+      const index = form.elements.namedItem('submittedProblemIndex');
+      const field = writable(code) ? code : index;
+      if (!writable(field)) return;
+      const contest = form.elements.namedItem('contestId');
+      const list = form.elements.namedItem('problemsetName') || form.elements.namedItem('submittedProblemsetName');
+      const listName = problem.scope.match(/^\/problemsets\/([\w-]+)$/)?.[1];
+      const plan = [];
+      if (writable(list)) plan.push([list, listName ? [listName] : ['main','problemset','codeforces']]);
+      if (writable(contest)) plan.push([contest, [problem.contest]]);
+      else if (/^[1-9]\d*$/.test(contest?.value || '') && contest.value !== problem.contest && field === index) return;
+      const scopedIndex = scope !== '/problemset' || writable(contest) || contest?.value === problem.contest;
+      const values = scopedIndex && field === index ? [problem.index, problem.code] : [problem.code];
+      if (scopedIndex && field === code && field.tagName === 'SELECT') values.push(problem.index);
+      plan.push([field, values]);
+
+      if (!automatic && !override) { show('上次打开的题目', true); return; }
+      // Existing selections can come from a failed submit, browser restore, or the user.
+      if (!override && plan.some(([input, values]) => !/^(?:|-1|0)$/.test(input.value.trim())
+          && !input.selectedOptions?.[0]?.disabled && !values.some(value => value.toUpperCase() === input.value.trim().toUpperCase()))) {
+        show('当前已有其他题目', true);
+        return;
+      }
+      for (const [input, values] of plan) {
+        const value = selectedValue(input, values);
+        if (value === null) return;
+        if (input.value === value) continue;
+        changing = true;
+        input.value = value;
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+        input.dispatchEvent(new Event('change', {bubbles:true}));
+        changing = false;
+        // Choosing the contest or collection can replace the next dropdown.
+        if (input !== field) { setTimeout(check, 0); return; }
+      }
+      if (field.value && field.isConnected) show('已选择 ' + problem.code, false);
+    }
+    apply.addEventListener('click', () => { override = true; start(); });
+    document.addEventListener('input', event => {
+      if (event.isTrusted && event.target.form === watchedForm
+        && /^(submittedProblemCode|submittedProblemIndex|contestId|problemsetName|submittedProblemsetName)$/.test(event.target.name)) {
+        cancelled = true;
+        observer.disconnect();
+        clearTimeout(timeout);
+        hint.remove();
+      }
+    });
+    function start() {
+      observer.observe(document.body, {childList:true, subtree:true, attributes:true, attributeFilter:['disabled','readonly','value']});
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        observer.disconnect();
+        if (watchedForm?.isConnected && !hint.isConnected) show('请在提交表单确认题号 ' + problem.code, false);
+      }, 10_000);
+      check();
+    }
+    start();
+  }
+
   function addNightSwitch(repairSurfaces) {
     const toggle = owned(button('夜间模式', 'cfds-night-toggle'));
     const chooser = document.querySelector('#header .lang-chooser');
@@ -699,12 +855,18 @@
     .cfds-full .cfds-sample-copy:hover { border-color:var(--cfds-accent-text,#327267); }
     .cfds-full .cfds-sample-copy:focus-visible { outline:2px solid var(--cfds-focus,#3b9aaf); outline-offset:2px; }
     .cfds-full .cfds-sample-copy:disabled { cursor:wait; opacity:.65; }
-    .cfds-verdict-audio[data-cfds-v1] {
+    .cfds-verdict-audio[data-cfds-v1],.cfds-submit-hint[data-cfds-v1] button {
       margin-inline-start:.5em; padding:2px 7px; border:1px solid var(--cfds-control-border,#a7bbbb);
       border-radius:5px; background:var(--cfds-panel,#f5faf9); color:var(--cfds-text,#20434a);
       font:500 12px/1.5 system-ui,"Microsoft YaHei",sans-serif; cursor:pointer;
     }
-    @media print { .cfds-sample-copy,.cfds-verdict-audio { display:none!important; } }
+    .cfds-submit-hint[data-cfds-v1] {
+      margin:0 0 12px; padding:8px 12px; border:1px solid var(--cfds-accent-border,#bad4d2);
+      border-radius:6px; background:var(--cfds-panel,#f5faf9); color:var(--cfds-text,#20434a);
+      font:500 13px/1.5 system-ui,"Microsoft YaHei",sans-serif;
+    }
+    .cfds-submit-hint[data-cfds-v1] button[hidden] { display:none!important; }
+    @media print { .cfds-sample-copy,.cfds-verdict-audio,.cfds-submit-hint { display:none!important; } }
     .cfds-full img { max-width:100%; height:auto; }
     .cfds-full pre { overflow:auto; white-space:pre; background:var(--cfds-code,#f5f7f7); padding:.5em .75em; border-radius:4px; }
     [data-cfds-bold] .cfds-line[data-cfds-v1] { font-weight:550 }
@@ -856,8 +1018,8 @@
   `;
   const skin = [
     ':host{all:initial;display:block;font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif;color:var(--cfds-text,#1e293b);color-scheme:var(--cfds-scheme,light);--accent:var(--cfds-primary,#134c52)}',
-    '*,*::before,*::after{box-sizing:border-box}button,select,input{font:inherit}button{border:1px solid var(--cfds-control-border,#bbc9ca);border-radius:6px;padding:5px 12px;background:var(--cfds-raised,white);color:var(--cfds-text,#20434a);cursor:pointer;font-weight:550}',
-    'button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}button:hover{filter:brightness(.94)}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--cfds-focus,#3b9aaf);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}[hidden]{display:none!important}',
+    '*,*::before,*::after{box-sizing:border-box}button,select,input{font:inherit}button,.submit-link{border:1px solid var(--cfds-control-border,#bbc9ca);border-radius:6px;padding:5px 12px;background:var(--cfds-raised,white);color:var(--cfds-text,#20434a);cursor:pointer;font-weight:550}.submit-link{text-decoration:none}',
+    'button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}button:hover,.submit-link:hover{filter:brightness(.94)}button:focus-visible,.submit-link:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--cfds-focus,#3b9aaf);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}[hidden]{display:none!important}',
     '.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:9px;padding:10px 14px;border:1px solid var(--cfds-border,#bad4d2);border-left:3px solid var(--cfds-accent-text,#267971);border-radius:6px;margin:8px 0 16px;background:var(--cfds-panel,#f5faf9)}',
     '.brand{font-weight:700;color:var(--cfds-accent-text,#224c4c)}.status{flex:1 1 140px;color:var(--cfds-muted,#41595b);font-size:12px}.status.error,.err{color:var(--cfds-danger,#a23226)}.actions{display:flex;gap:6px;flex-wrap:wrap}',
     'dialog{margin:auto;max-width:min(430px,92vw);width:430px;max-height:90vh;padding:24px;border:1px solid var(--cfds-border,#adcbc8);border-radius:12px;color:var(--cfds-text,#20353a);background:var(--cfds-panel,white);box-shadow:0 16px 60px #0005}',
@@ -1051,7 +1213,6 @@
   function watchVerdicts() {
     const storageKey = 'cfds.pendingVerdict.v1';
     const lastPlayedKey = 'cfds.lastVerdictSound';
-    const submitPage = /^(\/(?:group\/[^/]+\/)?(?:contest|gym)\/\d+|\/problemset)\/submit\/?$/;
     const resultPage = /\/(?:my|status)(?:\/|$)|^\/submissions\//;
     const verdictSelector = '.submissionVerdictWrapper,[submissionverdict],[data-verdict]';
     let playingId;
@@ -1099,10 +1260,11 @@
         if (item.id) return id === item.id;
         const authors = candidate.cells[2]?.querySelectorAll('a[href*="/profile/"]') || [];
         const problem = candidate.querySelector('td[data-problemid],.problem-cell') || candidate.cells[3];
-        const problemLink = problem?.querySelector('a[href*="/problem/"]');
-        const index = problemLink?.pathname.match(/\/problem\/(?:\d+\/)?([a-z]\w*)\/?$/i)?.[1]
+        const context = problemContext(problem?.querySelector('a[href*="/problem/"]')?.pathname);
+        const index = context?.index
           || problem?.textContent.trim().match(/^([a-z]\w*)(?=\s|[-–.]|$)/i)?.[1];
         if (![...authors].some(author => handleOf(author) === item.handle) || Number(id) <= item.previous
+          || (item.contest && context && context.contest !== item.contest)
           || (item.index && index?.toUpperCase() !== item.index.toUpperCase())) return false;
         return rowTimeMatches(candidate, item.time) ?? freshRedirect;
       });
@@ -1140,8 +1302,11 @@
       const knownIds = [sessionStorage.getItem(lastPlayedKey), pending()?.id];
       document.querySelectorAll('tr[data-submission-id]').forEach(row => knownIds.push(row.dataset.submissionId));
       const previous = Math.max(0, ...knownIds.map(id => Number(id) || 0));
-      const index = form.elements.namedItem('submittedProblemIndex')?.value?.trim();
-      sessionStorage.setItem(storageKey, JSON.stringify({scope, handle, previous, index, from:location.pathname, time:Date.now()}));
+      const bareIndex = form.elements.namedItem('submittedProblemIndex')?.value?.trim();
+      const code = form.elements.namedItem('submittedProblemCode')?.value?.trim() || bareIndex;
+      const combined = scope === '/problemset' && code?.match(/^(\d+)([a-z][a-z0-9]*)$/i);
+      const contest = combined?.[1], index = combined?.[2] || bareIndex;
+      sessionStorage.setItem(storageKey, JSON.stringify({scope, handle, previous, contest, index, from:location.pathname, time:Date.now()}));
       unlockSound().catch(() => {});
     }
     document.addEventListener('submit', trackSubmission, true);
@@ -1287,6 +1452,8 @@
     const state = {busy:false, panel:null, source:[]};
     const visiblePanel = () => target.contains(state.panel) && !state.panel.hidden;
     if (kind === 'problem') {
+      const problem = problemContext(location.pathname);
+      if (problem) actions.append(submitProblemLink(problem));
       const copyProblem = copyButton('复制题目', () => {
         const source = clipboardText(target);
         return visiblePanel() ? [source, clipboardText(state.panel)].join('\n\n') : source;
@@ -1365,6 +1532,7 @@
   GM_registerMenuCommand('CF 双语题面：翻译设置',() => settings(null));
   rememberBundledSounds();
   watchVerdicts();
+  setupProblemPrefill();
   applySavedStyle();
   document.head.append(make('style', translationCss + nightCss +
     '.cfds-comment-launch{background:transparent;color:inherit;border:1px solid #83aaa5;border-radius:4px;cursor:pointer;font:12px/1.5 system-ui,sans-serif;padding:1px 7px;margin:0 0 4px}'));
