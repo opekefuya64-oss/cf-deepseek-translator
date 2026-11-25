@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.8.0
+// @version      1.8.1
 // @description  Codeforces 中文导航和夜间模式。用自己的 DeepSeek 密钥翻译题面、博文和评论，整篇显示中文。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -861,6 +861,7 @@
     '.style-options label{display:inline-flex;align-items:center;gap:7px;margin:0 8px 4px 0;padding:6px 10px;border:1px solid var(--cfds-control-border,#b3c4c2);border-radius:6px;font-weight:500;cursor:pointer}',
     '.style-options input{margin:0;width:16px;height:16px;accent-color:var(--cfds-accent-text,var(--accent))}.style-options label:has(:checked){border-color:var(--cfds-accent-border,#679b92);background:var(--cfds-accent-surface,#eef7f5)}',
     '.style-preview{margin-top:10px}.preview-title{display:block;color:var(--cfds-muted,#496061);font-size:12px;margin-bottom:3px}',
+    '.sound-options{margin-top:16px;border-top:1px solid var(--cfds-border,#adcbc8);padding-top:12px}.sound-options summary{font-weight:600;cursor:pointer}.sound-options input[type=file]{display:block;width:100%;margin:6px 0}',
     '@media(max-width:510px){.status{flex-basis:calc(100% - 110px)}.toolbar{padding:8px}.buttons button{padding:6px 9px}}',
     '@media print{.toolbar,dialog{display:none}}',
   ].join('\n');
@@ -868,7 +869,7 @@
     const root = host.attachShadow({mode:'closed'});
     root.append(make('style',skin)); return root;
   }
-  const savedSounds = () => GM_getValue(SOUND_KEY, bundledSounds);
+  const savedSounds = () => ({...bundledSounds, ...GM_getValue(SOUND_KEY, {})});
   let soundContext, playingSound;
   function unlockSound() {
     soundContext ??= new AudioContext();
@@ -896,22 +897,20 @@
       reader.readAsDataURL(file);
     });
   }
-  function soundSettings() {
-    if (closeSettings) closeSettings();
-    const host = owned(make('div')), root = shell(host);
-    const dialog = make('dialog'), form = make('form');
-    const title = make('h2', '评测音效');
-    title.id = 'cfds-sound-title';
-    dialog.setAttribute('aria-labelledby', title.id);
+  function soundOptions() {
+    const section = make('details', null, 'sound-options');
+    section.append(make('summary', '评测音效'));
     const current = savedSounds();
+    const wasEnabled = current.enabled ?? Boolean(current.ac || current.other);
     const message = make('p', '', 'err');
     message.setAttribute('role', 'status');
     const enabled = make('input');
     enabled.type = 'checkbox';
-    enabled.checked = current.enabled ?? Boolean(current.ac || current.other);
+    enabled.name = 'verdictSounds';
+    enabled.checked = wasEnabled;
     const enableLabel = make('label');
     enableLabel.append(enabled, ' 播放评测音效');
-    form.append(title, enableLabel);
+    section.append(enableLabel);
     function audioInput(key, label) {
       const choose = make('input');
       choose.type = 'file';
@@ -922,45 +921,39 @@
       const preview = button('试听');
       preview.addEventListener('click', async () => {
         try {
-          const ready = unlockSound();
+          unlockSound().catch(() => {});
           const data = await readSound(choose.files[0]) || current[key];
           if (!data) { message.textContent = '请先选择音频。'; return; }
-          await ready;
+          if (!section.isConnected) return;
           await playVerdictSound(data, key === 'ac');
           message.textContent = '';
         } catch { message.textContent = '无法播放，请检查音频格式。'; }
       });
-      form.append(caption, choose, preview);
-      if (current[key]) form.append(make('p', '已配置音频，留空可沿用。', 'muted'));
+      section.append(caption, choose, preview);
+      if (current[key]) section.append(make('p', '已配置音频，留空可沿用。', 'muted'));
       return choose;
     }
     const ac = audioInput('ac', 'AC 音效（播放前半段）');
     const other = audioInput('other', '非 AC 音效');
-    const buttons = make('div', null, 'buttons'), save = button('保存', 'primary'), cancel = button('取消');
-    save.type = 'submit';
-    buttons.append(save, cancel);
-    form.append(message, buttons);
-    function close() { dialog.close(); host.remove(); closeSettings = null; }
-    cancel.addEventListener('click', close);
-    dialog.addEventListener('close', () => { if (host.isConnected) close(); });
-    form.addEventListener('submit', async event => {
-      event.preventDefault();
-      save.disabled = true;
+    section.append(message);
+    function hasChanges() {
+      return enabled.checked !== wasEnabled || ac.files.length > 0 || other.files.length > 0;
+    }
+    async function readChanges() {
       try {
+        const play = enabled.checked;
         const [newAc, newOther] = await Promise.all([readSound(ac.files[0]), readSound(other.files[0])]);
-        if (!host.isConnected) return;
-        const sounds = {enabled:enabled.checked, ac:newAc || current.ac, other:newOther || current.other};
-        if (sounds.enabled && !sounds.ac && !sounds.other) { message.textContent = '请至少选择一个音效。'; return; }
-        GM_setValue(SOUND_KEY, sounds);
-        close();
-      } catch (error) { message.textContent = error.message || '保存音效失败。'; }
-      finally { save.disabled = false; }
-    });
-    dialog.append(form);
-    root.append(dialog);
-    document.body.append(host);
-    closeSettings = close;
-    dialog.showModal();
+        const sounds = {enabled:play, ac:newAc || current.ac, other:newOther || current.other};
+        if (play && !sounds.ac && !sounds.other) throw new Error('请至少选择一个音效。');
+        message.textContent = '';
+        return sounds;
+      } catch (error) {
+        section.open = true;
+        message.textContent = error.message || '读取音效失败。';
+        return null;
+      }
+    }
+    return {section, hasChanges, readChanges};
   }
 
   function watchVerdicts() {
@@ -1108,7 +1101,8 @@
     buttons.append(save);
     const justSave = button('仅保存'); if (onTranslate) buttons.append(justSave);
     buttons.append(later);
-    form.append(make('p','CF 双语题面 · DeepSeek','eyebrow'),title,intro,keyLabel,input,modelLabel,select,styleOptions,preview,err,buttons);
+    const sound = soundOptions();
+    form.append(make('p','CF 双语题面 · DeepSeek','eyebrow'),title,intro,keyLabel,input,modelLabel,select,styleOptions,preview,sound.section,err,buttons);
     if (hasKey) {
       const forget = button('清除已保存的密钥','forget');
       forget.addEventListener('click',() => { GM_deleteValue(KEY); close(); });
@@ -1116,17 +1110,25 @@
     }
     root.append(dlg); dlg.append(form); document.body.append(host);
     function close() { input.value = ''; if (dlg.open) dlg.close(); host.remove(); closeSettings = null; }
-    function storeThen(translate) {
+    async function storeThen(translate) {
+      if (save.disabled) return;
       const enteredKey = input.value.trim();
       const value = enteredKey || savedKey();
       if ((translate || enteredKey) && !/^sk-\S{5,}$/.test(value)) {
         err.textContent = '请填写以 sk- 开头的完整 DeepSeek API Key。'; input.focus(); return;
       }
+      save.disabled = justSave.disabled = true;
       try {
+        if (sound.hasChanges()) {
+          const sounds = await sound.readChanges();
+          if (!sounds || !host.isConnected) return;
+          GM_setValue(SOUND_KEY, sounds);
+        }
         if (enteredKey) GM_setValue(KEY, enteredKey);
         GM_setValue(MODEL, select.value);
         GM_setValue(STYLE_KEY, selectedStyle());
       } catch { err.textContent = '保存失败，请检查篡改猴的脚本存储。'; return; }
+      finally { save.disabled = justSave.disabled = false; }
       applySavedStyle();
       close(); if (translate) onTranslate?.();
     }
@@ -1257,7 +1259,6 @@
     if (kind === 'problem' && !firstOffered && !savedKey()) { firstOffered = true; settings(start); }
     return start;
   }
-  GM_registerMenuCommand('CF 双语题面：评测音效', soundSettings);
   GM_registerMenuCommand('CF 双语题面：翻译设置',() => settings(null));
   watchVerdicts();
   applySavedStyle();
