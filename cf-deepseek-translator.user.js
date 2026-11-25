@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CF 双语题面 · DeepSeek
 // @namespace    local.cf.bilingual.deepseek
-// @version      1.8.1
+// @version      1.8.2
 // @description  Codeforces 中文导航和夜间模式。用自己的 DeepSeek 密钥翻译题面、博文和评论，整篇显示中文。
 // @license      MIT
 // @match        https://codeforces.com/*
@@ -30,6 +30,7 @@
   const STYLE_KEY = 'cfds.translationStyle';
   const NIGHT_KEY = 'cfds.nightMode';
   const SOUND_KEY = 'cfds.verdictSounds';
+  const SOUND_DEFAULTS_KEY = 'cfds.verdictSoundDefaults';
   const bundledSounds = {}; // PERSONAL_SOUND_DEFAULTS
   const model = () => GM_getValue(MODEL, 'deepseek-flash');
   const savedKey = () => GM_getValue(KEY, '');
@@ -861,7 +862,7 @@
     '.style-options label{display:inline-flex;align-items:center;gap:7px;margin:0 8px 4px 0;padding:6px 10px;border:1px solid var(--cfds-control-border,#b3c4c2);border-radius:6px;font-weight:500;cursor:pointer}',
     '.style-options input{margin:0;width:16px;height:16px;accent-color:var(--cfds-accent-text,var(--accent))}.style-options label:has(:checked){border-color:var(--cfds-accent-border,#679b92);background:var(--cfds-accent-surface,#eef7f5)}',
     '.style-preview{margin-top:10px}.preview-title{display:block;color:var(--cfds-muted,#496061);font-size:12px;margin-bottom:3px}',
-    '.sound-options{margin-top:16px;border-top:1px solid var(--cfds-border,#adcbc8);padding-top:12px}.sound-options summary{font-weight:600;cursor:pointer}.sound-options input[type=file]{display:block;width:100%;margin:6px 0}',
+    '.sound-options{margin-top:16px;border-top:1px solid var(--cfds-border,#adcbc8);padding-top:12px}.sound-options summary{font-weight:600;cursor:pointer}.sound-options .sound-caption{margin:14px 0 0;font-weight:600}.sound-options .sound-name{margin:2px 0 6px;overflow-wrap:anywhere}.sound-actions{display:flex;gap:8px;flex-wrap:wrap}',
     '@media(max-width:510px){.status{flex-basis:calc(100% - 110px)}.toolbar{padding:8px}.buttons button{padding:6px 9px}}',
     '@media print{.toolbar,dialog{display:none}}',
   ].join('\n');
@@ -869,7 +870,24 @@
     const root = host.attachShadow({mode:'closed'});
     root.append(make('style',skin)); return root;
   }
-  const savedSounds = () => ({...bundledSounds, ...GM_getValue(SOUND_KEY, {})});
+  function rememberBundledSounds() {
+    if (!bundledSounds.ac && !bundledSounds.other) return;
+    try {
+      if (GM_getValue(SOUND_DEFAULTS_KEY, null)?.id !== bundledSounds.id) GM_setValue(SOUND_DEFAULTS_KEY, bundledSounds);
+    } catch { /* The clips can still play from the personal script. */ }
+  }
+  function savedSounds() {
+    const defaults = bundledSounds.id ? bundledSounds : GM_getValue(SOUND_DEFAULTS_KEY, {}) || {};
+    const user = GM_getValue(SOUND_KEY, {}) || {};
+    const sounds = {enabled:user.enabled};
+    for (const key of ['ac','other']) {
+      sounds[key] = user[key] || defaults[key];
+      const nameKey = key + 'Name';
+      sounds[nameKey] = user[key] && user[nameKey]
+        || (sounds[key] === defaults[key] ? defaults[nameKey] : undefined);
+    }
+    return sounds;
+  }
   let soundContext, playingSound;
   function unlockSound() {
     soundContext ??= new AudioContext();
@@ -915,10 +933,23 @@
       const choose = make('input');
       choose.type = 'file';
       choose.accept = 'audio/*,.wav,.mp3,.ogg,.m4a';
-      choose.id = 'cfds-sound-' + key;
-      const caption = make('label', label);
-      caption.htmlFor = choose.id;
+      choose.hidden = true;
+      const caption = make('p', label, 'sound-caption');
+      const name = make('p', '', 'muted sound-name');
+      name.setAttribute('aria-live', 'polite');
+      const change = button(current[key] ? '更换音频' : '选择音频');
       const preview = button('试听');
+      change.setAttribute('aria-label', (current[key] ? '更换' : '选择') + label);
+      preview.setAttribute('aria-label', '试听' + label);
+      const updateName = () => {
+        const selected = choose.files[0];
+        name.textContent = selected ? '待保存：' + selected.name
+          : current[key] ? '当前音效：' + (current[key + 'Name'] || '已保存音频') : '尚未配置音频';
+        preview.disabled = !selected && !current[key];
+      };
+      updateName();
+      change.addEventListener('click', () => choose.click());
+      choose.addEventListener('change', updateName);
       preview.addEventListener('click', async () => {
         try {
           unlockSound().catch(() => {});
@@ -929,8 +960,9 @@
           message.textContent = '';
         } catch { message.textContent = '无法播放，请检查音频格式。'; }
       });
-      section.append(caption, choose, preview);
-      if (current[key]) section.append(make('p', '已配置音频，留空可沿用。', 'muted'));
+      const actions = make('div', null, 'sound-actions');
+      actions.append(change, preview);
+      section.append(caption, name, choose, actions);
       return choose;
     }
     const ac = audioInput('ac', 'AC 音效（播放前半段）');
@@ -942,9 +974,12 @@
     async function readChanges() {
       try {
         const play = enabled.checked;
-        const [newAc, newOther] = await Promise.all([readSound(ac.files[0]), readSound(other.files[0])]);
-        const sounds = {enabled:play, ac:newAc || current.ac, other:newOther || current.other};
-        if (play && !sounds.ac && !sounds.other) throw new Error('请至少选择一个音效。');
+        const acFile = ac.files[0], otherFile = other.files[0];
+        const [newAc, newOther] = await Promise.all([readSound(acFile), readSound(otherFile)]);
+        if (play && !newAc && !newOther && !current.ac && !current.other) throw new Error('请至少选择一个音效。');
+        const sounds = {...GM_getValue(SOUND_KEY, {}), enabled:play};
+        if (newAc) Object.assign(sounds, {ac:newAc, acName:acFile.name});
+        if (newOther) Object.assign(sounds, {other:newOther, otherName:otherFile.name});
         message.textContent = '';
         return sounds;
       } catch (error) {
@@ -1260,6 +1295,7 @@
     return start;
   }
   GM_registerMenuCommand('CF 双语题面：翻译设置',() => settings(null));
+  rememberBundledSounds();
   watchVerdicts();
   applySavedStyle();
   document.head.append(make('style', translationCss + nightCss +
